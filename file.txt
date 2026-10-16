@@ -1,69 +1,3 @@
-from html import escape
-
-
-def email_claim_tree(tree):
-    rows = []
-
-    def add_node(item, depth=0):
-        background = "#17324d" if depth == 0 else "#f5f7fb"
-        color = "white" if depth == 0 else "#17324d"
-
-        rows.append(f"""
-        <tr style="background-color:{background};color:{color};">
-            <td style="padding:9px 12px 9px {12 + depth * 22}px;
-                       border:1px solid #d5deea;">
-                {escape(item["label"])}
-            </td>
-            <td style="padding:9px;border:1px solid #d5deea;
-                       text-align:right;">
-                {item["count"]:,}
-            </td>
-            <td style="padding:9px;border:1px solid #d5deea;
-                       text-align:right;">
-                {item["amount"]:,.2f}
-            </td>
-        </tr>
-        """)
-
-        for child in item.get("children", []):
-            add_node(child, depth + 1)
-
-    add_node(tree)
-
-    return """
-    <table cellpadding="0" cellspacing="0"
-           style="border-collapse:collapse;font-family:Arial;
-                  font-size:12px;width:700px;">
-        <tr>
-            <th style="padding:9px;text-align:left;">Category</th>
-            <th style="padding:9px;text-align:right;">Applications</th>
-            <th style="padding:9px;text-align:right;">Total loss</th>
-        </tr>
-    """ + "".join(rows) + "</table>"
-
-
-def email_table(df):
-    return (
-        df.to_html(index=False, escape=True, na_rep="", border=0)
-        .replace(
-            '<table border="0" class="dataframe">',
-            '<table cellpadding="0" cellspacing="0" '
-            'style="border-collapse:collapse;font-family:Arial;'
-            'font-size:11px;">',
-        )
-        .replace(
-            "<th>",
-            '<th style="padding:8px;border:1px solid #d5deea;'
-            'background-color:#17324d;color:white;text-align:left;">',
-        )
-        .replace(
-            "<td>",
-            '<td style="padding:8px;border:1px solid #d5deea;">',
-        )
-    )
-
-
-# Replace your existing message_list_alerts with this.
 message_list_alerts = [
     header_alerts,
     "<p>Hi Team,<br><br>Please find below the claims review.</p>",
@@ -72,8 +6,8 @@ message_list_alerts = [
     email_claim_tree(overall_tree),
 
     "<br><h3>OM5 transaction summary</h3>",
-    email_table(om5_transaction_summary_df),
+    om5_transaction_summary_df.to_html(index=False, na_rep=""),
 
     "<br><h3>Blocked-card transaction summary</h3>",
-    email_table(blocked_transaction_summary_df),
+    blocked_transaction_summary_df.to_html(index=False, na_rep=""),
 ]
