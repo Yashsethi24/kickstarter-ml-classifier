@@ -1,120 +1,79 @@
 from html import escape
-import pandas as pd
 
 
-def create_email_report(
-    overall_tree,
-    om5_transaction_summary_df,
-    blocked_transaction_summary_df,
-):
-    def table_html(df, title):
-        table = df.to_html(
-            index=False,
-            escape=True,
-            border=0,
-            na_rep="",
-            classes="summary-table",
+def email_claim_tree(tree):
+    rows = []
+
+    def add_node(item, depth=0):
+        background = "#17324d" if depth == 0 else "#f5f7fb"
+        color = "white" if depth == 0 else "#17324d"
+
+        rows.append(f"""
+        <tr style="background-color:{background};color:{color};">
+            <td style="padding:9px 12px 9px {12 + depth * 22}px;
+                       border:1px solid #d5deea;">
+                {escape(item["label"])}
+            </td>
+            <td style="padding:9px;border:1px solid #d5deea;
+                       text-align:right;">
+                {item["count"]:,}
+            </td>
+            <td style="padding:9px;border:1px solid #d5deea;
+                       text-align:right;">
+                {item["amount"]:,.2f}
+            </td>
+        </tr>
+        """)
+
+        for child in item.get("children", []):
+            add_node(child, depth + 1)
+
+    add_node(tree)
+
+    return """
+    <table cellpadding="0" cellspacing="0"
+           style="border-collapse:collapse;font-family:Arial;
+                  font-size:12px;width:700px;">
+        <tr>
+            <th style="padding:9px;text-align:left;">Category</th>
+            <th style="padding:9px;text-align:right;">Applications</th>
+            <th style="padding:9px;text-align:right;">Total loss</th>
+        </tr>
+    """ + "".join(rows) + "</table>"
+
+
+def email_table(df):
+    return (
+        df.to_html(index=False, escape=True, na_rep="", border=0)
+        .replace(
+            '<table border="0" class="dataframe">',
+            '<table cellpadding="0" cellspacing="0" '
+            'style="border-collapse:collapse;font-family:Arial;'
+            'font-size:11px;">',
         )
-
-        return f"""
-        <section class="summary-section">
-            <h2>{escape(title)}</h2>
-            <div class="table-scroll">{table}</div>
-        </section>
-        """
-
-    tree_html = render_claim_tree(
-        overall_tree,
-        title="Claims overview",
+        .replace(
+            "<th>",
+            '<th style="padding:8px;border:1px solid #d5deea;'
+            'background-color:#17324d;color:white;text-align:left;">',
+        )
+        .replace(
+            "<td>",
+            '<td style="padding:8px;border:1px solid #d5deea;">',
+        )
     )
 
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Claims review</title>
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            margin: 20px;
-            color: #17324d;
-            background: #ffffff;
-        }}
 
-        .summary-section {{
-            margin-top: 30px;
-        }}
+# Replace your existing message_list_alerts with this.
+message_list_alerts = [
+    header_alerts,
+    "<p>Hi Team,<br><br>Please find below the claims review.</p>",
 
-        .summary-section h2 {{
-            font-size: 20px;
-            margin-bottom: 14px;
-        }}
+    "<h3>Claims overview</h3>",
+    email_claim_tree(overall_tree),
 
-        .table-scroll {{
-            overflow-x: auto;
-        }}
+    "<br><h3>OM5 transaction summary</h3>",
+    email_table(om5_transaction_summary_df),
 
-        .summary-table {{
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 12px;
-        }}
-
-        .summary-table th {{
-            background: #17324d;
-            color: white;
-            text-align: left;
-            padding: 10px;
-            border: 1px solid #d5deea;
-        }}
-
-        .summary-table td {{
-            padding: 9px;
-            border: 1px solid #d5deea;
-            text-align: right;
-        }}
-
-        .summary-table td:first-child {{
-            text-align: left;
-        }}
-
-        .summary-table tbody tr:nth-child(even) {{
-            background: #f5f7fb;
-        }}
-    </style>
-</head>
-<body>
-    {tree_html}
-
-    {table_html(
-        om5_transaction_summary_df,
-        "OM5 transaction summary"
-    )}
-
-    {table_html(
-        blocked_transaction_summary_df,
-        "Blocked-card transaction summary"
-    )}
-</body>
-</html>
-"""
-
-
-# Build a single report containing only the three requested items.
-email_report_html = create_email_report(
-    overall_tree,
-    om5_transaction_summary_df,
-    blocked_transaction_summary_df,
-)
-
-# Preview in Databricks.
-displayHTML(email_report_html)
-
-# Save in your writable Workspace folder.
-output_path = "/Workspace/Users/your_email/claims_review.html"
-
-with open(output_path, "w", encoding="utf-8") as file:
-    file.write(email_report_html)
-
-print(f"Saved: {output_path}")
+    "<br><h3>Blocked-card transaction summary</h3>",
+    email_table(blocked_transaction_summary_df),
+]
