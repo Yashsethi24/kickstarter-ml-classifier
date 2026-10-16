@@ -1,63 +1,21 @@
-from html import escape
+tree_html = render_claim_tree(overall_tree, title="All claims")
 
+report_html = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Claims review</title></head>
+<body>
+    {tree_html}
 
-def render_email_tree(tree):
-    def render_node(item):
-        children = item.get("children", [])
+    <h3>OM5 transaction summary</h3>
+    {om5_transaction_summary_df.to_html(index=False, na_rep="")}
 
-        box = f"""
-        <table role="presentation" align="center"
-               cellpadding="8" cellspacing="0" border="1"
-               style="border-collapse:collapse;border:1px solid #b8c8d8;">
-            <tr>
-                <td align="center" bgcolor="#edf3f9">
-                    <b>{escape(str(item["label"]))}</b><br>
-                    {item["count"]:,} applications<br>
-                    Loss: {item["amount"]:,.2f}
-                </td>
-            </tr>
-        </table>
-        """
+    <h3>Blocked-card transaction summary</h3>
+    {blocked_transaction_summary_df.to_html(index=False, na_rep="")}
+</body>
+</html>
+"""
 
-        if not children:
-            return box
+output_path = "/Workspace/Users/your_email/claims_review.html"
 
-        child_cells = "".join(
-            f"""
-            <td valign="top" align="center" style="padding:0 6px;">
-                <div style="font-size:18px;color:#789;">&#8595;</div>
-                {render_node(child)}
-            </td>
-            """
-            for child in children
-        )
-
-        return f"""
-        <table role="presentation" align="center"
-               cellpadding="0" cellspacing="0" border="0">
-            <tr>
-                <td colspan="{len(children)}" align="center">
-                    {box}
-                </td>
-            </tr>
-            <tr>{child_cells}</tr>
-        </table>
-        """
-
-    return render_node(tree)
-
-
-
-message_list_alerts = [
-    header_alerts,
-    "<p>Hi Team,<br><br>Please find below the claims review.</p>",
-
-    "<h3>Claims overview</h3>",
-    render_email_tree(overall_tree),
-
-    "<br><h3>OM5 transaction summary</h3>",
-    om5_transaction_summary_df.to_html(index=False, na_rep=""),
-
-    "<br><h3>Blocked-card transaction summary</h3>",
-    blocked_transaction_summary_df.to_html(index=False, na_rep=""),
-]
+with open(output_path, "w", encoding="utf-8") as file:
+    file.write(report_html)
