@@ -1,0 +1,120 @@
+from html import escape
+import pandas as pd
+
+
+def create_email_report(
+    overall_tree,
+    om5_transaction_summary_df,
+    blocked_transaction_summary_df,
+):
+    def table_html(df, title):
+        table = df.to_html(
+            index=False,
+            escape=True,
+            border=0,
+            na_rep="",
+            classes="summary-table",
+        )
+
+        return f"""
+        <section class="summary-section">
+            <h2>{escape(title)}</h2>
+            <div class="table-scroll">{table}</div>
+        </section>
+        """
+
+    tree_html = render_claim_tree(
+        overall_tree,
+        title="Claims overview",
+    )
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Claims review</title>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            color: #17324d;
+            background: #ffffff;
+        }}
+
+        .summary-section {{
+            margin-top: 30px;
+        }}
+
+        .summary-section h2 {{
+            font-size: 20px;
+            margin-bottom: 14px;
+        }}
+
+        .table-scroll {{
+            overflow-x: auto;
+        }}
+
+        .summary-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }}
+
+        .summary-table th {{
+            background: #17324d;
+            color: white;
+            text-align: left;
+            padding: 10px;
+            border: 1px solid #d5deea;
+        }}
+
+        .summary-table td {{
+            padding: 9px;
+            border: 1px solid #d5deea;
+            text-align: right;
+        }}
+
+        .summary-table td:first-child {{
+            text-align: left;
+        }}
+
+        .summary-table tbody tr:nth-child(even) {{
+            background: #f5f7fb;
+        }}
+    </style>
+</head>
+<body>
+    {tree_html}
+
+    {table_html(
+        om5_transaction_summary_df,
+        "OM5 transaction summary"
+    )}
+
+    {table_html(
+        blocked_transaction_summary_df,
+        "Blocked-card transaction summary"
+    )}
+</body>
+</html>
+"""
+
+
+# Build a single report containing only the three requested items.
+email_report_html = create_email_report(
+    overall_tree,
+    om5_transaction_summary_df,
+    blocked_transaction_summary_df,
+)
+
+# Preview in Databricks.
+displayHTML(email_report_html)
+
+# Save in your writable Workspace folder.
+output_path = "/Workspace/Users/your_email/claims_review.html"
+
+with open(output_path, "w", encoding="utf-8") as file:
+    file.write(email_report_html)
+
+print(f"Saved: {output_path}")
