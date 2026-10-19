@@ -1,21 +1,61 @@
-tree_html = render_claim_tree(overall_tree, title="All claims")
+def om5_timing_nodes(rows):
+    delta = rows["OM5_Alert_date"] - rows["OPEN_DT"]
 
-report_html = f"""<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>Claims review</title></head>
-<body>
-    {tree_html}
+    def timing_node(label, mask):
+        subset = rows.loc[mask].copy()
 
-    <h3>OM5 transaction summary</h3>
-    {om5_transaction_summary_df.to_html(index=False, na_rep="")}
+        subset["_om5_status"] = (
+            subset["OM5 Action Status"]
+            .astype("string")
+            .str.strip()
+            .replace("", pd.NA)
+            .fillna("Missing action status")
+        )
 
-    <h3>Blocked-card transaction summary</h3>
-    {blocked_transaction_summary_df.to_html(index=False, na_rep="")}
-</body>
-</html>
-"""
+        status_children = [
+            node(str(status), group)
+            for status, group in subset.groupby(
+                "_om5_status", sort=True
+            )
+        ]
 
-output_path = "/Workspace/Users/your_email/claims_review.html"
+        return node(label, subset, status_children)
 
-with open(output_path, "w", encoding="utf-8") as file:
-    file.write(report_html)
+    children = [
+        timing_node(
+            "Worked within 1 day",
+            delta.between(
+                pd.Timedelta(0),
+                pd.Timedelta(days=1),
+            ),
+        ),
+        timing_node(
+            "Worked >1–2 days",
+            delta.gt(pd.Timedelta(days=1))
+            & delta.le(pd.Timedelta(days=2)),
+        ),
+        timing_node(
+            "Worked >2–3 days",
+            delta.gt(pd.Timedelta(days=2))
+            & delta.le(pd.Timedelta(days=3)),
+        ),
+        timing_node(
+            "Worked after 3 days",
+            delta.gt(pd.Timedelta(days=3)),
+        ),
+    ]
+
+    if delta.isna().any():
+        children.append(
+            timing_node("Timing unavailable", delta.isna())
+        )
+
+    if delta.lt(pd.Timedelta(0)).any():
+        children.append(
+            timing_node(
+                "Before open date",
+                delta.lt(pd.Timedelta(0)),
+            )
+        )
+
+    return children
