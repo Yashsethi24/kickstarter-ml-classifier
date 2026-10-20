@@ -1,33 +1,41 @@
-import re
-import pandas as pd
+from pyspark.sql import functions as F
 
-# Example: Lists.IsBlacklisted [High] (500)
-pattern = re.compile(
-    r"^\s*(.*?)\s*\[[^\]]*\]\s*\(\s*(-?\d+(?:\.\d+)?)\s*\)\s*$"
+# Distinct accounts prevent duplicate rows from multiplying transactions.
+accounts = final_DF.select(
+    F.col("account_number").cast("string").alias("CARD_NUMBER")
+).distinct()
+
+# Retrieve qualifying transactions for these accounts.
+transactions_df = (
+    spark.table("tsys.v_cfm_tsys_mbna_bef")
+    .filter(
+        (F.col("AMOUNT_APPROVED") > 0) &
+        (F.col("REQUEST_CODE") == "17")
+    )
+    .join(accounts, on="CARD_NUMBER", how="left_semi")
+    .select(
+        "CARD_NUMBER",
+        "CREDIT_LIMIT",
+        "AMOUNT_APPROVED",
+        "Auth_DateTime",
+        "TRANSACTION_AMOUNT",
+        "REQUEST_CODE"
+    )
 )
 
-def extract_facts(value):
-    facts = {}
+# Count transactions and total approved amount per card.
+summary_df = transactions_df.groupBy("CARD_NUMBER").agg(
+    F.count("*").alias("transaction_count"),
+    F.sum("AMOUNT_APPROVED").alias("total_amount_approved")
+)
 
-    if pd.isna(value):
-        return facts
+# Include accounts with no qualifying transactions.
+result_df = (
+    accounts.join(summary_df, on="CARD_NUMBER", how="left")
+    .fillna({
+        "transaction_count": 0,
+        "total_amount_approved": 0
+    })
+)
 
-    for item in str(value).split("|"):
-        match = pattern.match(item)
-
-        if match:
-            fact_name = match.group(1).strip()
-            fact_value = float(match.group(2))
-            facts[fact_name] = fact_value
-
-    return facts
-
-# Create fact columns, preserving the original row order and index
-fact_columns = pd.DataFrame(
-    [extract_facts(value) for value in apps["facts_fired"]],
-    index=apps.index
-).fillna(0)
-
-apps = pd.concat([apps, fact_columns], axis=1)
-
-display(apps)
+display(result_df)
