@@ -1,61 +1,21 @@
-def om5_timing_nodes(rows):
-    delta = rows["OM5_Alert_date"] - rows["OPEN_DT"]
+Hello Team,
 
-    def timing_node(label, mask):
-        subset = rows.loc[mask].copy()
+I am currently applying for Canadian Permanent Residency through Express Entry and would like to request an Employment Reference Letter for immigration purposes.
 
-        subset["_om5_status"] = (
-            subset["OM5 Action Status"]
-            .astype("string")
-            .str.strip()
-            .replace("", pd.NA)
-            .fillna("Missing action status")
-        )
+I would appreciate it if the letter could be issued on official TD letterhead and include the following details:
 
-        status_children = [
-            node(str(status), group)
-            for status, group in subset.groupby(
-                "_om5_status", sort=True
-            )
-        ]
+1. My full name and official job title.
+2. My employment start date (October 16, 2025) and confirmation of current employment.
+3. My employment type and regular working hours per week.
+4. My annual salary and employment benefits.
+5. My work location.
+6. A detailed description of my main job duties and responsibilities.
+7. TD's business address and contact information.
+8. The name, designation and signature of the authorized representative, along with the date of issuance.
 
-        return node(label, subset, status_children)
+Please let me know if a separate request or approval is required to include my job duties and responsibilities.
 
-    children = [
-        timing_node(
-            "Worked within 1 day",
-            delta.between(
-                pd.Timedelta(0),
-                pd.Timedelta(days=1),
-            ),
-        ),
-        timing_node(
-            "Worked >1–2 days",
-            delta.gt(pd.Timedelta(days=1))
-            & delta.le(pd.Timedelta(days=2)),
-        ),
-        timing_node(
-            "Worked >2–3 days",
-            delta.gt(pd.Timedelta(days=2))
-            & delta.le(pd.Timedelta(days=3)),
-        ),
-        timing_node(
-            "Worked after 3 days",
-            delta.gt(pd.Timedelta(days=3)),
-        ),
-    ]
+Thank you for your assistance.
 
-    if delta.isna().any():
-        children.append(
-            timing_node("Timing unavailable", delta.isna())
-        )
-
-    if delta.lt(pd.Timedelta(0)).any():
-        children.append(
-            timing_node(
-                "Before open date",
-                delta.lt(pd.Timedelta(0)),
-            )
-        )
-
-    return children
+Best regards,
+Yash Sethi
