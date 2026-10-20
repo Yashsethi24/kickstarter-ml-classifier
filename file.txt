@@ -1,21 +1,41 @@
-Hello Team,
+import pandas as pd
+import matplotlib.pyplot as plt
 
-I am currently applying for Canadian Permanent Residency through Express Entry and would like to request an Employment Reference Letter for immigration purposes.
+frauds = apps.loc[
+    pd.to_numeric(apps["Fraud_ind"], errors="coerce").eq(1)
+].copy()
 
-I would appreciate it if the letter could be issued on official TD letterhead and include the following details:
+frauds["score"] = pd.to_numeric(frauds["score"], errors="coerce")
 
-1. My full name and official job title.
-2. My employment start date (October 16, 2025) and confirmation of current employment.
-3. My employment type and regular working hours per week.
-4. My annual salary and employment benefits.
-5. My work location.
-6. A detailed description of my main job duties and responsibilities.
-7. TD's business address and contact information.
-8. The name, designation and signature of the authorized representative, along with the date of issuance.
+fraud_distribution = (
+    frauds.groupby("score", dropna=False)
+    .size()
+    .reset_index(name="fraud_count")
+    .sort_values("score")
+)
 
-Please let me know if a separate request or approval is required to include my job duties and responsibilities.
+fraud_distribution["fraud_pct"] = (
+    fraud_distribution["fraud_count"]
+    .div(len(frauds) or 1)
+    .mul(100)
+    .round(2)
+)
 
-Thank you for your assistance.
+display(fraud_distribution)
 
-Best regards,
-Yash Sethi
+# Plot fraud counts by score
+if not fraud_distribution.empty:
+    fraud_distribution.assign(
+        score=fraud_distribution["score"].fillna("Missing").astype(str)
+    ).plot.bar(
+        x="score",
+        y="fraud_count",
+        figsize=(12, 5),
+        legend=False,
+        title="Fraud distribution by score"
+    )
+
+    plt.xlabel("Score")
+    plt.ylabel("Number of frauds")
+    plt.tight_layout()
+    plt.show()
