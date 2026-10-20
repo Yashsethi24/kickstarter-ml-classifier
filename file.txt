@@ -1,5 +1,4 @@
 import pandas as pd
-import matplotlib.pyplot as plt
 
 frauds = apps.loc[
     pd.to_numeric(apps["Fraud_ind"], errors="coerce").eq(1)
@@ -11,31 +10,26 @@ fraud_distribution = (
     frauds.groupby("score", dropna=False)
     .size()
     .reset_index(name="fraud_count")
-    .sort_values("score")
+    .sort_values("score", ascending=False, na_position="last")
+    .reset_index(drop=True)
 )
 
+total_frauds = fraud_distribution["fraud_count"].sum()
+
 fraud_distribution["fraud_pct"] = (
-    fraud_distribution["fraud_count"]
-    .div(len(frauds) or 1)
-    .mul(100)
-    .round(2)
+    fraud_distribution["fraud_count"] / (total_frauds or 1) * 100
+)
+
+fraud_distribution["cumulative_frauds"] = (
+    fraud_distribution["fraud_count"].cumsum()
+)
+
+fraud_distribution["cumulative_fraud_pct"] = (
+    fraud_distribution["cumulative_frauds"] / (total_frauds or 1) * 100
+)
+
+fraud_distribution[["fraud_pct", "cumulative_fraud_pct"]] = (
+    fraud_distribution[["fraud_pct", "cumulative_fraud_pct"]].round(2)
 )
 
 display(fraud_distribution)
-
-# Plot fraud counts by score
-if not fraud_distribution.empty:
-    fraud_distribution.assign(
-        score=fraud_distribution["score"].fillna("Missing").astype(str)
-    ).plot.bar(
-        x="score",
-        y="fraud_count",
-        figsize=(12, 5),
-        legend=False,
-        title="Fraud distribution by score"
-    )
-
-    plt.xlabel("Score")
-    plt.ylabel("Number of frauds")
-    plt.tight_layout()
-    plt.show()
