@@ -1,41 +1,17 @@
 from pyspark.sql import functions as F
 
-# Distinct accounts prevent duplicate rows from multiplying transactions.
-accounts = final_DF.select(
-    F.col("account_number").cast("string").alias("CARD_NUMBER")
-).distinct()
+overall_summary_df = result_df.agg(
+    F.count(
+        F.when(F.col("transaction_count") > 0, 1)
+    ).alias("cards_with_transactions"),
 
-# Retrieve qualifying transactions for these accounts.
-transactions_df = (
-    spark.table("tsys.v_cfm_tsys_mbna_bef")
-    .filter(
-        (F.col("AMOUNT_APPROVED") > 0) &
-        (F.col("REQUEST_CODE") == "17")
-    )
-    .join(accounts, on="CARD_NUMBER", how="left_semi")
-    .select(
-        "CARD_NUMBER",
-        "CREDIT_LIMIT",
-        "AMOUNT_APPROVED",
-        "Auth_DateTime",
-        "TRANSACTION_AMOUNT",
-        "REQUEST_CODE"
-    )
+    F.coalesce(
+        F.sum("transaction_count"), F.lit(0)
+    ).alias("total_transactions"),
+
+    F.coalesce(
+        F.sum("total_amount_approved"), F.lit(0)
+    ).alias("total_amount_approved")
 )
 
-# Count transactions and total approved amount per card.
-summary_df = transactions_df.groupBy("CARD_NUMBER").agg(
-    F.count("*").alias("transaction_count"),
-    F.sum("AMOUNT_APPROVED").alias("total_amount_approved")
-)
-
-# Include accounts with no qualifying transactions.
-result_df = (
-    accounts.join(summary_df, on="CARD_NUMBER", how="left")
-    .fillna({
-        "transaction_count": 0,
-        "total_amount_approved": 0
-    })
-)
-
-display(result_df)
+display(overall_summary_df)
