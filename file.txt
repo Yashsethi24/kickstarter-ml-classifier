@@ -1,35 +1,54 @@
 import pandas as pd
 
-frauds = apps.loc[
-    pd.to_numeric(apps["Fraud_ind"], errors="coerce").eq(1)
-].copy()
+df = apps.copy()
+df["score"] = pd.to_numeric(df["score"], errors="coerce")
+df["is_fraud"] = pd.to_numeric(
+    df["Fraud_ind"], errors="coerce"
+).eq(1).astype(int)
 
-frauds["score"] = pd.to_numeric(frauds["score"], errors="coerce")
-
-fraud_distribution = (
-    frauds.groupby("score", dropna=False)
-    .size()
-    .reset_index(name="fraud_count")
+distribution = (
+    df.groupby("score", dropna=False)
+    .agg(
+        total_applications=("is_fraud", "size"),
+        fraud_count=("is_fraud", "sum")
+    )
+    .reset_index()
     .sort_values("score", ascending=False, na_position="last")
     .reset_index(drop=True)
 )
 
-total_frauds = fraud_distribution["fraud_count"].sum()
+total_apps = distribution["total_applications"].sum()
+total_frauds = distribution["fraud_count"].sum()
 
-fraud_distribution["fraud_pct"] = (
-    fraud_distribution["fraud_count"] / (total_frauds or 1) * 100
+distribution["fraud_rate_pct"] = (
+    distribution["fraud_count"]
+    / distribution["total_applications"] * 100
 )
 
-fraud_distribution["cumulative_frauds"] = (
-    fraud_distribution["fraud_count"].cumsum()
+distribution["fraud_pct"] = (
+    distribution["fraud_count"] / (total_frauds or 1) * 100
 )
 
-fraud_distribution["cumulative_fraud_pct"] = (
-    fraud_distribution["cumulative_frauds"] / (total_frauds or 1) * 100
+distribution["cumulative_applications"] = (
+    distribution["total_applications"].cumsum()
+)
+distribution["cumulative_applications_pct"] = (
+    distribution["cumulative_applications"] / (total_apps or 1) * 100
+)
+distribution["cumulative_frauds"] = (
+    distribution["fraud_count"].cumsum()
+)
+distribution["cumulative_fraud_pct"] = (
+    distribution["cumulative_frauds"] / (total_frauds or 1) * 100
+)
+distribution["cumulative_fraud_rate_pct"] = (
+    distribution["cumulative_frauds"]
+    / distribution["cumulative_applications"] * 100
 )
 
-fraud_distribution[["fraud_pct", "cumulative_fraud_pct"]] = (
-    fraud_distribution[["fraud_pct", "cumulative_fraud_pct"]].round(2)
-)
+pct_cols = distribution.columns[
+    distribution.columns.str.endswith("_pct")
+]
+distribution[pct_cols] = distribution[pct_cols].round(2)
 
-display(fraud_distribution)
+display(distribution)
