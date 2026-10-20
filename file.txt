@@ -1,7 +1,6 @@
-def color_for(label):
-    label = str(label).lower()
+Hi Alex!
 
-    if "non-allotted" in label:
-        return "#FEE2E2", "#991B1B"   # light red fill, dark red border/text
+Just wanted to share a quick update on the Amazon portfolio:
 
-    return "#FFFFFF", "#475569"       # white fill, neutral grey border/text
+- Amazon Strategy Reporting: Finalized and scheduled the daily performance report. You should have received today's update with the subject “Report: Amazon Strategies Performance.”
+- TU Analysis: Prepared the data and completed an initial score distribution analysis. I'll continue working on strategy optimization tomorrow and keep you posted on the progress.
