@@ -1,21 +1,33 @@
-Hello Team,
+import re
+import pandas as pd
 
-I am currently applying for Canadian Permanent Residency through Express Entry and would like to request an Employment Reference Letter for immigration purposes.
+# Example: Lists.IsBlacklisted [High] (500)
+pattern = re.compile(
+    r"^\s*(.*?)\s*\[[^\]]*\]\s*\(\s*(-?\d+(?:\.\d+)?)\s*\)\s*$"
+)
 
-I would appreciate it if the letter could be issued on official TD letterhead and include the following details:
+def extract_facts(value):
+    facts = {}
 
-1. My full name and official job title.
-2. My employment start date (October 16, 2025) and confirmation of current employment.
-3. My employment type and regular working hours per week.
-4. My annual salary and employment benefits.
-5. My work location.
-6. A detailed description of my main job duties and responsibilities.
-7. TD's business address and contact information.
-8. The name, designation and signature of the authorized representative, along with the date of issuance.
+    if pd.isna(value):
+        return facts
 
-Please let me know if a separate request or approval is required to include my job duties and responsibilities.
+    for item in str(value).split("|"):
+        match = pattern.match(item)
 
-Thank you for your assistance.
+        if match:
+            fact_name = match.group(1).strip()
+            fact_value = float(match.group(2))
+            facts[fact_name] = fact_value
 
-Best regards,
-Yash Sethi
+    return facts
+
+# Create fact columns, preserving the original row order and index
+fact_columns = pd.DataFrame(
+    [extract_facts(value) for value in apps["facts_fired"]],
+    index=apps.index
+).fillna(0)
+
+apps = pd.concat([apps, fact_columns], axis=1)
+
+display(apps)
