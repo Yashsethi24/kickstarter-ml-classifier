@@ -1,32 +1,7 @@
+def color_for(label):
+    label = str(label).lower()
 
-import base64
+    if "non-allotted" in label:
+        return "#FEE2E2", "#991B1B"   # light red fill, dark red border/text
 
-with open("amazon_claim_tree.png", "rb") as f:
-    image_base64 = base64.b64encode(f.read()).decode("utf-8")
-
-tree_html = f"""
-<h3>Current Month Performance</h3>
-<p>Amazon Claims - Investigation Breakdown</p>
-
-<img src="data:image/png;base64,{image_base64}"
-     width="1000"
-     style="max-width:100%;height:auto;">
-"""
-
-
-
-
-message_list_alerts = [
-    header_alerts,
-    tree_html,
-    "<br><br>",
-    overall_summary_df.to_html(
-        index=False,
-        escape=True,
-        classes="summary-table"
-    )
-]
-
-
-
-displayHTML(tree_html)
+    return "#FFFFFF", "#475569"       # white fill, neutral grey border/text
