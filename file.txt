@@ -1,17 +1,179 @@
-from pyspark.sql import functions as F
 
-overall_summary_df = result_df.agg(
-    F.count(
-        F.when(F.col("transaction_count") > 0, 1)
-    ).alias("cards_with_transactions"),
+import matplotlib.pyplot as plt
+from matplotlib.patches import FancyBboxPatch
+from textwrap import fill
 
-    F.coalesce(
-        F.sum("transaction_count"), F.lit(0)
-    ).alias("total_transactions"),
+def render_claim_tree(tree, title="All Claims",
+                      output="amazon_claim_tree.png"):
 
-    F.coalesce(
-        F.sum("total_amount_approved"), F.lit(0)
-    ).alias("total_amount_approved")
+    # Handle a list of top-level branches
+    if isinstance(tree, list):
+        tree = {
+            "label": title,
+            "count": sum(x.get("count", 0) for x in tree),
+            "amount": sum(x.get("amount", 0) for x in tree),
+            "children": tree
+        }
+
+    positions = {}
+    leaf_idx = [0]
+
+    def assign_positions(node, depth=0):
+        children = node.get("children") or []
+
+        if not children:
+            y = leaf_idx[0]
+            leaf_idx[0] += 1
+        else:
+            child_ys = [
+                assign_positions(child, depth + 1)
+                for child in children
+            ]
+            y = (min(child_ys) + max(child_ys)) / 2
+
+        positions[id(node)] = (depth, y)
+        return y
+
+    assign_positions(tree)
+
+    max_depth = max(x for x, y in positions.values())
+    num_leaves = max(leaf_idx[0], 1)
+
+    fig, ax = plt.subplots(
+        figsize=(max(12, (max_depth + 1) * 3.4),
+                 max(5, num_leaves * 1.15)),
+        dpi=160
+    )
+
+    fig.patch.set_facecolor("#FFFFFF")
+    ax.set_facecolor("#FFFFFF")
+
+    box_w = 2.65
+    box_h = 0.72
+    x_step = 3.35
+
+    def color_for(label):
+        label = label.lower()
+
+        if "highly suspect" in label:
+            return "#DCFCE7", "#166534"
+        if "investigation" in label:
+            return "#FEF3C7", "#92400E"
+        if "declined" in label:
+            return "#FEE2E2", "#991B1B"
+        if "worked" in label:
+            return "#E0F2FE", "#075985"
+        return "#EDE9FE", "#5B21B6"
+
+    def draw(node):
+        depth, y = positions[id(node)]
+        x = depth * x_step
+        label = str(node.get("label", "Unknown"))
+        count = node.get("count", 0)
+        amount = node.get("amount", 0) or 0
+
+        bg, fg = color_for(label)
+
+        card = FancyBboxPatch(
+            (x, y - box_h / 2),
+            box_w,
+            box_h,
+            boxstyle="round,pad=0.08,rounding_size=0.13",
+            linewidth=1.1,
+            edgecolor=fg,
+            facecolor=bg,
+            zorder=3
+        )
+        ax.add_patch(card)
+
+        ax.text(
+            x + 0.12, y - 0.12,
+            fill(label, width=30),
+            fontsize=9,
+            fontweight="bold",
+            color=fg,
+            va="center",
+            zorder=4
+        )
+
+        ax.text(
+            x + 0.12, y + 0.19,
+            f"{count:,} claims  |  ${amount:,.2f}",
+            fontsize=8,
+            color="#334155",
+            va="center",
+            zorder=4
+        )
+
+        for child in node.get("children") or []:
+            child_depth, child_y = positions[id(child)]
+            child_x = child_depth * x_step
+
+            # Draw elbow connector behind the cards
+            start_x = x + box_w + 0.08
+            end_x = child_x - 0.08
+            mid_x = (start_x + end_x) / 2
+
+            ax.plot(
+                [start_x, mid_x, mid_x, end_x],
+                [y, y, child_y, child_y],
+                color="#94A3B8",
+                linewidth=1.3,
+                zorder=1
+            )
+
+            draw(child)
+
+    draw(tree)
+
+    ax.set_xlim(-0.25, max_depth * x_step + box_w + 0.3)
+    ax.set_ylim(-0.7, num_leaves - 0.3)
+    ax.invert_yaxis()
+    ax.axis("off")
+
+    ax.set_title(
+        title,
+        fontsize=16,
+        fontweight="bold",
+        color="#0F172A",
+        pad=20
+    )
+
+    plt.tight_layout()
+    fig.savefig(
+        output,
+        dpi=200,
+        bbox_inches="tight",
+        facecolor="white"
+    )
+    plt.close(fig)
+
+    return output
+
+
+
+
+tree_image = render_claim_tree(
+    overall_tree,
+    title="Amazon Claims - Investigation Breakdown"
 )
 
-display(overall_summary_df)
+
+
+tree_html = """
+<h3>Current Month Performance</h3>
+<p>Amazon Claims - Investigation Breakdown</p>
+
+<img src="cid:amazon_claim_tree"
+     alt="Amazon claims investigation tree"
+     style="width:100%; max-width:1100px;">
+"""
+
+message_list_alerts = [
+    header_alerts,
+    tree_html,
+    overall_summary_df.to_html(
+        index=False,
+        classes="summary-table"
+    )
+]
