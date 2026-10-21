@@ -1,46 +1,17 @@
-E610198771
-E610198971
-E610198750
-E610199920
-E610199977
-E610199944
-E610198737
-E610199954
-E610199670
-E610199522
-E610200074
-E610200019
-E610198739
-E610199961
-E610199620
-E610198728
-E610199056
-E610199754
-E610199976
-E610199708
-E610198741
-E610199933
-E610200160
-E610200362
-E610200367
-E610200463
-E610198706
-E610198662
-E610199095
-E610199057
-E610199815
-E610200123
-E610198708
-E610198703
-E610200059
-E610198714
-E610200062
-E610198711
-E610199111
-E610198742
-E610198723
-E610198697
-E610198719
-E610198665
-E610198689
-E610198686
+
+summary_df = (
+    final_df.groupby('CLM_YM')
+    .agg(
+        unique_applications=('Application_Number', 'nunique'),
+        applications_with_transactions=(
+            'Application_Number',
+            lambda x: x[final_df.loc[x.index, 'transaction_count'] > 0].nunique()
+        ),
+        total_transactions=('transaction_count', 'sum'),
+        total_amount_approved=('total_amount_approved', 'sum')
+    )
+    .reset_index()
+    .sort_values('CLM_YM')
+)
+
+display(summary_df)
