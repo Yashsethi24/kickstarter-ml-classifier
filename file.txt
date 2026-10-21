@@ -1,14 +1,9 @@
-%sql
-SELECT
-    Application_Number,
-    CONF_APP_FRAUD,
-    MIN(
-        LEAST(
-            NULLIF(TRY_CAST(App_Fraud_M_10d_Marked_Date AS DATE), DATE '0001-01-01'),
-            NULLIF(TRY_CAST(App_Fraud_GT_10d_Marked_Date AS DATE), DATE '0001-01-01'),
-            NULLIF(TRY_CAST(Conf_Cards_Fraud_Date_M_90D AS DATE), DATE '0001-01-01')
-        )
-    ) OVER (
-        PARTITION BY Application_Number
-    ) AS fraud_marked_date
-FROM claims_final_ss1;
+df_mbna_tdct_on_br_fraud['CONFIRM_FRAUD'] = (
+    df_mbna_tdct_on_br_fraud[
+        [
+            'CONF_APP_FRAUD',
+            'Final_App_Fraud_Tagged_BR',
+            'Final_App_CNF_Fraud_Tagged'
+        ]
+    ].max(axis=1)
+)
