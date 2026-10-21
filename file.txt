@@ -1,8 +1,18 @@
-from datetime import date
+import pandas as pd
+import glob
+import os
 
-start_date = date(2026, 6, 1)
-yesterday = date(2026, 6, 30)
+folder_path = "/Workspace/Users/rajshreyas.penukonda@td.com/Applications Fraud/TU IDX/Daily Files Cust2TU"
 
-current = start_date
+# Find all CSV files containing 202606
+files = glob.glob(os.path.join(folder_path, "*202606*.csv"))
 
-print(f"Checking dates from {start_date} to {yesterday}")
+print(f"Files found: {len(files)}")
+
+# Read and combine all files
+combined_df = pd.concat(
+    [pd.read_csv(file) for file in files],
+    ignore_index=True
+)
+
+print(f"Total records: {len(combined_df):,}")
