@@ -1,9 +1,14 @@
-MIN(
-    LEAST(
-        NULLIF(TRY_CAST(App_FICO_FRAUD_Marked_Date AS DATE), DATE '0001-01-01'),
-        NULLIF(TRY_CAST(FIQM_App_Fraud_Marked_Date AS DATE), DATE '0001-01-01'),
-        NULLIF(TRY_CAST(Fraud_Flag_Date AS DATE), DATE '0001-01-01')
-    )
-) OVER (
-    PARTITION BY header_applicationId
-) AS FRAUD_DATES
+%sql
+SELECT
+    Application_Number,
+    CONF_APP_FRAUD,
+    MIN(
+        LEAST(
+            NULLIF(TRY_CAST(App_Fraud_M_10d_Marked_Date AS DATE), DATE '0001-01-01'),
+            NULLIF(TRY_CAST(App_Fraud_GT_10d_Marked_Date AS DATE), DATE '0001-01-01'),
+            NULLIF(TRY_CAST(Conf_Cards_Fraud_Date_M_90D AS DATE), DATE '0001-01-01')
+        )
+    ) OVER (
+        PARTITION BY Application_Number
+    ) AS fraud_marked_date
+FROM claims_final_ss1;
