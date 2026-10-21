@@ -1,17 +1,231 @@
+import numpy as np
+import pandas as pd
+from pyspark.sql import functions as F, Window
 
-summary_df = (
-    final_df.groupby('CLM_YM')
-    .agg(
-        unique_applications=('Application_Number', 'nunique'),
-        applications_with_transactions=(
-            'Application_Number',
-            lambda x: x[final_df.loc[x.index, 'transaction_count'] > 0].nunique()
-        ),
-        total_transactions=('transaction_count', 'sum'),
-        total_amount_approved=('total_amount_approved', 'sum')
-    )
-    .reset_index()
-    .sort_values('CLM_YM')
+# Standardize column capitalization.
+base = df.copy()
+base.columns = base.columns.str.upper()
+base = base.rename(columns={"RUN_DATE": "RUN_DATE"})
+
+required = [
+    "APPLICATION_NUMBER", "CARD_NUMBER", "ACCT_NUM_TA1",
+    "RUN_DATE", "SUSP_IND_BASE", "CNF_FRAUD_IND"
+]
+missing = set(required) - set(base.columns)
+if missing:
+    raise ValueError(f"Missing columns in df: {sorted(missing)}")
+
+for col in ["APPLICATION_NUMBER", "CARD_NUMBER", "ACCT_NUM_TA1"]:
+    base[col] = base[col].astype("string").str.strip()
+    base[col] = base[col].replace("", pd.NA)
+
+base["RUN_DATE"] = pd.to_datetime(
+    base["RUN_DATE"], errors="raise"
+).dt.normalize()
+
+if base.loc[base["CARD_NUMBER"].notna(), "RUN_DATE"].isna().any():
+    raise ValueError("Some cards have no Run_date.")
+
+# ------------------------------------------------------------
+# 1. MBR & SMC application summary
+# Fraud = confirmed fraud under your existing TSYS definition.
+# Genuine = explicitly CNF_FRAUD_IND = 0.
+# Missing status stays unknown.
+# ------------------------------------------------------------
+apps = (
+    base.dropna(subset=["APPLICATION_NUMBER"])
+        .groupby("APPLICATION_NUMBER", as_index=False)
+        .agg(fraud_status=("CNF_FRAUD_IND", "max"))
 )
 
-display(summary_df)
+frauds = apps["fraud_status"].eq(1).sum()
+genuine = apps["fraud_status"].eq(0).sum()
+
+alerts_summary = pd.DataFrame([{
+    "alerts": len(apps),
+    "genuine_applications": genuine,
+    "frauds": frauds,
+    "unknown_status": apps["fraud_status"].isna().sum(),
+    "FPR": genuine / frauds if frauds else np.nan
+}])
+
+# ------------------------------------------------------------
+# One record per card for the card and transaction reports.
+# Use latest run date; stop if its status records conflict.
+# ------------------------------------------------------------
+cards = base.dropna(subset=["CARD_NUMBER"]).copy()
+latest_run = cards.groupby("CARD_NUMBER")["RUN_DATE"].transform("max")
+cards = cards.loc[cards["RUN_DATE"].eq(latest_run)]
+
+status_cols = ["SUSP_IND_BASE", "CNF_FRAUD_IND"]
+conflicts = cards.groupby("CARD_NUMBER")[status_cols].nunique(dropna=False)
+if conflicts.gt(1).any(axis=None):
+    raise ValueError(
+        "Conflicting statuses for a card at its latest Run_date."
+    )
+
+cards = cards[
+    ["CARD_NUMBER", "RUN_DATE"] + status_cols
+].drop_duplicates()
+
+cards["blocked"] = cards["SUSP_IND_BASE"].eq(1)
+cards["unblocked"] = (
+    cards["SUSP_IND_BASE"].eq(0) &
+    cards["CNF_FRAUD_IND"].eq(0)
+)
+cards["confirmed_fraud"] = cards["CNF_FRAUD_IND"].eq(1)
+
+# ------------------------------------------------------------
+# Approved transactions, limited to cards in this report.
+# ------------------------------------------------------------
+card_keys = spark.createDataFrame(
+    cards[["CARD_NUMBER", "RUN_DATE"]].assign(
+        RUN_DATE=lambda x: x["RUN_DATE"].dt.date
+    )
+)
+
+tx = (
+    spark.table("tsys.v_cfm_tsys_mbna_bef")
+    .select(
+        F.trim(F.col("CARD_NUMBER").cast("string")).alias("CARD_NUMBER"),
+        F.col("CREDIT_LIMIT").cast("double").alias("CREDIT_LIMIT"),
+        F.col("AMOUNT_APPROVED").cast("double").alias("AMOUNT_APPROVED"),
+        F.to_timestamp("Auth_DateTime").alias("AUTH_TS")
+    )
+    .filter(F.col("AMOUNT_APPROVED") > 0)
+    .join(card_keys, "CARD_NUMBER", "inner")
+)
+
+# Latest approval supplies the observed credit limit.
+# Equal latest timestamps with conflicting limits need resolution.
+latest_window = Window.partitionBy("CARD_NUMBER")
+latest_tx = (
+    tx.withColumn("LATEST_TS", F.max("AUTH_TS").over(latest_window))
+      .filter(F.col("AUTH_TS") == F.col("LATEST_TS"))
+)
+
+limit_conflicts = (
+    latest_tx.groupBy("CARD_NUMBER")
+    .agg(F.countDistinct("CREDIT_LIMIT").alias("N_LIMITS"))
+    .filter(F.col("N_LIMITS") > 1)
+)
+if limit_conflicts.limit(1).count():
+    raise ValueError("Conflicting credit limits at latest transaction time.")
+
+limits = latest_tx.groupBy("CARD_NUMBER").agg(
+    F.max("CREDIT_LIMIT").alias("credit_limit")
+)
+
+by_run = F.to_date("AUTH_TS") <= F.col("RUN_DATE")
+after_run = F.to_date("AUTH_TS") > F.col("RUN_DATE")
+
+tx_summary = (
+    tx.groupBy("CARD_NUMBER")
+    .agg(
+        F.count("*").alias("transaction_count"),
+        F.sum("AMOUNT_APPROVED").alias("total_approved_amount"),
+        F.sum(F.when(by_run, F.col("AMOUNT_APPROVED"))
+              .otherwise(0.0)).alias("approved_by_run_date"),
+        F.sum(F.when(after_run, F.col("AMOUNT_APPROVED"))
+              .otherwise(0.0)).alias("approved_after_run_date"),
+        F.sum(F.when(F.col("AUTH_TS").isNull(), 1)
+              .otherwise(0)).alias("transactions_missing_date")
+    )
+    .join(limits, "CARD_NUMBER", "left")
+    .toPandas()
+)
+
+report = cards.merge(
+    tx_summary, on="CARD_NUMBER", how="left", validate="one_to_one"
+)
+
+amount_count_cols = [
+    "transaction_count", "total_approved_amount",
+    "approved_by_run_date", "approved_after_run_date",
+    "transactions_missing_date"
+]
+report[amount_count_cols] = report[amount_count_cols].fillna(0)
+
+report["utilization_pct"] = (
+    report["total_approved_amount"]
+    .div(report["credit_limit"].where(report["credit_limit"] > 0))
+    .mul(100)
+)
+
+# ------------------------------------------------------------
+# 2. Overall card summary
+# ------------------------------------------------------------
+total_cards = len(report)
+cards_summary = pd.DataFrame([{
+    "total_cards": total_cards,
+    "unblocked": report["unblocked"].sum(),
+    "blocked": report["blocked"].sum(),
+    "confirmed_fraud": report["confirmed_fraud"].sum(),
+    "unknown_status": report[status_cols].isna().any(axis=1).sum(),
+    "unblock_rate": (
+        report["unblocked"].sum() / total_cards
+        if total_cards else np.nan
+    )
+}])
+
+# ------------------------------------------------------------
+# 3. Unblocked-card details
+# ------------------------------------------------------------
+unblocked_cards = report.loc[
+    report["unblocked"],
+    [
+        "CARD_NUMBER", "RUN_DATE", "transaction_count",
+        "total_approved_amount", "credit_limit", "utilization_pct"
+    ]
+].copy()
+
+# ------------------------------------------------------------
+# 4. Utilization distribution for unblocked cards
+# Boundaries: [0,10), [10,30), [30,50), [50,80), [80,infinity)
+# ------------------------------------------------------------
+labels = ["0–10%", "10–30%", "30–50%", "50–80%", "80%+"]
+
+unblocked_cards["utilization_band"] = pd.cut(
+    unblocked_cards["utilization_pct"],
+    bins=[0, 10, 30, 50, 80, np.inf],
+    labels=labels,
+    right=False
+)
+
+utilization_summary = (
+    unblocked_cards.groupby("utilization_band", observed=False)
+    .size()
+    .reindex(labels, fill_value=0)
+    .rename_axis("utilization_band")
+    .reset_index(name="cards")
+)
+
+utilization_summary = pd.concat([
+    utilization_summary,
+    pd.DataFrame([{
+        "utilization_band": "Unknown credit limit",
+        "cards": unblocked_cards["utilization_pct"].isna().sum()
+    }])
+], ignore_index=True)
+
+# ------------------------------------------------------------
+# 5. Confirmed-fraud card activity
+# ------------------------------------------------------------
+fraud_cards = report.loc[
+    report["confirmed_fraud"],
+    [
+        "CARD_NUMBER", "RUN_DATE", "transaction_count",
+        "total_approved_amount", "approved_by_run_date",
+        "approved_after_run_date", "transactions_missing_date"
+    ]
+].copy()
+
+for title, result in [
+    ("MBR & SMC", alerts_summary),
+    ("Cards", cards_summary),
+    ("Unblocked-card activity", unblocked_cards),
+    ("Unblocked-card utilization", utilization_summary),
+    ("Fraud-card activity", fraud_cards)
+]:
+    print(title)
+    display(result)
