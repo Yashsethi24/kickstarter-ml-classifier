@@ -1,5 +1,6 @@
 df_mbna_tdct_on_br_fraud['FRAUD_DATES'] = (
-    df_mbna_tdct_on_br_fraud['FRAUD_DATES']
-    .combine_first(df_mbna_tdct_on_br_fraud['fraud_marked_date'])
-    .combine_first(df_mbna_tdct_on_br_fraud['fraud_marked_date_BR'])
+    pd.to_datetime(
+        df_mbna_tdct_on_br_fraud['FRAUD_DATES'],
+        errors='coerce'
+    ).dt.strftime('%Y%m%d').fillna('')
 )
