@@ -1,9 +1,5 @@
-df_mbna_tdct_on_br_fraud['CONFIRM_FRAUD'] = (
-    df_mbna_tdct_on_br_fraud[
-        [
-            'CONF_APP_FRAUD',
-            'Final_App_Fraud_Tagged_BR',
-            'Final_App_CNF_Fraud_Tagged'
-        ]
-    ].max(axis=1)
+df_mbna_tdct_on_br_fraud['FRAUD_DATES'] = (
+    df_mbna_tdct_on_br_fraud['FRAUD_DATES']
+    .combine_first(df_mbna_tdct_on_br_fraud['fraud_marked_date'])
+    .combine_first(df_mbna_tdct_on_br_fraud['fraud_marked_date_BR'])
 )
