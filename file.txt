@@ -1,6 +1,8 @@
-Hi Alex!
+from datetime import date
 
-Just wanted to share a quick update on the Amazon portfolio:
+start_date = date(2026, 6, 1)
+yesterday = date(2026, 6, 30)
 
-- Amazon Strategy Reporting: Finalized and scheduled the daily performance report. You should have received today's update with the subject “Report: Amazon Strategies Performance.”
-- TU Analysis: Prepared the data and completed an initial score distribution analysis. I'll continue working on strategy optimization tomorrow and keep you posted on the progress.
+current = start_date
+
+print(f"Checking dates from {start_date} to {yesterday}")
