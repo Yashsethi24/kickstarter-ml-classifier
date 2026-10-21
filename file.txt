@@ -1,18 +1,38 @@
-import pandas as pd
-import glob
-import os
+WITH tab1 AS (
+    SELECT
+        *,
+        MAX(fraud) OVER (
+            PARTITION BY header_applicationId
+        ) AS Final_App_Fraud_Tagged,
 
-folder_path = "/Workspace/Users/rajshreyas.penukonda@td.com/Applications Fraud/TU IDX/Daily Files Cust2TU"
+        MAX(Suspected_Fraud) OVER (
+            PARTITION BY header_applicationId, Card
+        ) AS Final_App_Fraud_Suspected_Tagged,
 
-# Find all CSV files containing 202606
-files = glob.glob(os.path.join(folder_path, "*202606*.csv"))
+        MIN(
+            LEAST(
+                TRY_CAST(App_FICO_FRAUD_Marked_Date AS DATE),
+                TRY_CAST(FIQM_App_Fraud_Marked_Date AS DATE),
+                TRY_CAST(Fraud_Flag_Date AS DATE)
+            )
+        ) OVER (
+            PARTITION BY header_applicationId
+        ) AS FRAUD_DATES
 
-print(f"Files found: {len(files)}")
+    FROM hive_metastore.ca_appfraud.app_fraud_funnel
+    WHERE Product_Type = 'CC'
+      AND (Card LIKE '452%' OR Card IS NULL)
+),
 
-# Read and combine all files
-combined_df = pd.concat(
-    [pd.read_csv(file) for file in files],
-    ignore_index=True
+tab2 AS (
+    SELECT DISTINCT
+        FIQM_ID AS Application_Number,
+        Final_App_Fraud_Tagged,
+        Final_App_Fraud_Suspected_Tagged,
+        FRAUD_DATES
+    FROM tab1
 )
 
-print(f"Total records: {len(combined_df):,}")
+SELECT *
+FROM tab2
+WHERE LEFT(Application_Number, 1) = '3';
