@@ -1,38 +1,9 @@
-WITH tab1 AS (
-    SELECT
-        *,
-        MAX(fraud) OVER (
-            PARTITION BY header_applicationId
-        ) AS Final_App_Fraud_Tagged,
-
-        MAX(Suspected_Fraud) OVER (
-            PARTITION BY header_applicationId, Card
-        ) AS Final_App_Fraud_Suspected_Tagged,
-
-        MIN(
-            LEAST(
-                TRY_CAST(App_FICO_FRAUD_Marked_Date AS DATE),
-                TRY_CAST(FIQM_App_Fraud_Marked_Date AS DATE),
-                TRY_CAST(Fraud_Flag_Date AS DATE)
-            )
-        ) OVER (
-            PARTITION BY header_applicationId
-        ) AS FRAUD_DATES
-
-    FROM hive_metastore.ca_appfraud.app_fraud_funnel
-    WHERE Product_Type = 'CC'
-      AND (Card LIKE '452%' OR Card IS NULL)
-),
-
-tab2 AS (
-    SELECT DISTINCT
-        FIQM_ID AS Application_Number,
-        Final_App_Fraud_Tagged,
-        Final_App_Fraud_Suspected_Tagged,
-        FRAUD_DATES
-    FROM tab1
-)
-
-SELECT *
-FROM tab2
-WHERE LEFT(Application_Number, 1) = '3';
+MIN(
+    LEAST(
+        NULLIF(TRY_CAST(App_FICO_FRAUD_Marked_Date AS DATE), DATE '0001-01-01'),
+        NULLIF(TRY_CAST(FIQM_App_Fraud_Marked_Date AS DATE), DATE '0001-01-01'),
+        NULLIF(TRY_CAST(Fraud_Flag_Date AS DATE), DATE '0001-01-01')
+    )
+) OVER (
+    PARTITION BY header_applicationId
+) AS FRAUD_DATES
