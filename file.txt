@@ -1,48 +1,48 @@
-# Application-to-account mapping
-application_accounts = (
-    spark.table("hive_metastore.fiqm.applications")
-    .join(application_ids, "APPLICATION_NUMBER", "left_semi")
-    .select(
-        "APPLICATION_NUMBER",
-        F.trim("ACCOUNT_NUMBER").alias("ACCOUNT_NUMBER"),
-    )
-    .filter(
-        F.col("ACCOUNT_NUMBER").isNotNull()
-        & (F.col("ACCOUNT_NUMBER") != "")
-    )
-    .dropDuplicates(["APPLICATION_NUMBER", "ACCOUNT_NUMBER"])
-    .withColumn(
-        "join_key",
-        F.expr("try_cast(ACCOUNT_NUMBER AS DECIMAL(38,0))"),
-    )
+import pandas as pd
+
+# Clean status values
+secure_fraud = slim_pd["STC_SECURE_FRAUD"].astype("string").str.strip()
+tiered_auth = slim_pd["STATC_TIERED_AUTH"].astype("string").str.strip()
+
+# Convert dates — set format explicitly if needed, e.g. format="%Y%m%d"
+open_date = pd.to_datetime(
+    slim_pd["OPEN_DT"].astype("string").str.strip(),
+    errors="coerce",
 )
 
-# SLIM data with the corrected join key
-slim_source = (
-    spark.table("tsys.v_cfm_tsys_mbna_acct_slim")
-    .withColumn(
-        "join_key",
-        F.expr("try_cast(APPLID AS DECIMAL(38,0))"),
-    )
+fraud_date = pd.to_datetime(
+    slim_pd["SEC_FRAUD_STAT_DT"].astype("string").str.strip(),
+    errors="coerce",
 )
 
-# Add application number and application-table account number to SLIM
-slim = (
-    slim_source.alias("s")
-    .join(
-        application_accounts.alias("a"),
-        F.col("s.join_key") == F.col("a.join_key"),
-        "inner",
-    )
-    .select(
-        F.col("a.APPLICATION_NUMBER"),
-        F.col("a.ACCOUNT_NUMBER").alias("APPLICATION_ACCOUNT_NUMBER"),
-        *[
-            F.col(f"s.{col}")
-            for col in slim_source.columns
-            if col != "join_key"
-        ],
-    )
+slim_pd["days_to_fraud"] = (
+    fraud_date.dt.normalize() - open_date.dt.normalize()
+).dt.days
+
+status_present = (
+    secure_fraud.notna()
+    & ~secure_fraud.str.lower().isin(["", "null", "none", "nan"])
 )
 
-display(slim)
+slim_pd["CONFIRMED_FRAUD"] = (
+    status_present
+    & slim_pd["days_to_fraud"].between(0, 90)
+).fillna(False).astype(int)
+
+slim_pd["SUSPECTED_FRAUD"] = (
+    tiered_auth.str.upper().eq("L7")
+).fillna(False).astype(int)
+
+display(
+    slim_pd[
+        [
+            "APPLICATION_NUMBER",
+            "OPEN_DT",
+            "SEC_FRAUD_STAT_DT",
+            "STC_SECURE_FRAUD",
+            "days_to_fraud",
+            "CONFIRMED_FRAUD",
+            "SUSPECTED_FRAUD",
+        ]
+    ].head(20)
+)
