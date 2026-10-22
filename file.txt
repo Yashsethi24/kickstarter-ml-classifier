@@ -1,30 +1,5 @@
-import pandas as pd
+spark.table("hive_metastore.fiqm.applications").printSchema()
 
-data = df.copy()  # Replace df with your dataframe name
-
-data["load_month"] = (
-    pd.to_datetime(data["Load_Date"], errors="raise")
-    .dt.to_period("M")
-    .astype("string")
-)
-
-data["confirmed_app"] = data["Application_Number"].where(
-    pd.to_numeric(data["CONFIRMED_FRAUD"], errors="raise").eq(1)
-)
-
-data["suspected_app"] = data["Application_Number"].where(
-    pd.to_numeric(data["SUSPECTED_FRAUD"], errors="raise").eq(1)
-)
-
-summary = (
-    data.groupby("load_month", dropna=False)
-    .agg(
-        number_of_applications=("Application_Number", "nunique"),
-        confirmed_fraud_applications=("confirmed_app", "nunique"),
-        suspected_fraud_applications=("suspected_app", "nunique"),
-    )
-    .reset_index()
-    .sort_values("load_month")
-)
-
-display(summary)
+# Use the relevant portfolio
+spark.table("tsys.v_cfm_tsys_tdct_acct_slim").printSchema()
+# spark.table("tsys.v_cfm_tsys_mbna_acct_slim").printSchema()
