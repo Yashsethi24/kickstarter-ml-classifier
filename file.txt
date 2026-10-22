@@ -1,101 +1,57 @@
-from itertools import combinations
 import numpy as np
 import pandas as pd
 
-def rank_fact_combinations(
-    df,
-    fact_cols,
-    fraud_col="fraud_flag",
-    combination_size=2,
-    min_applications=100,
-):
-    data = df.loc[df[fraud_col].notna()].copy()
+# Use pairs, triples, or combine both:
+combination_results = pd.concat([pairs, triples], ignore_index=True)
 
-    if data.empty:
-        raise ValueError("No applications with a known fraud label.")
+selected = combination_results.loc[
+    combination_results["fraud_rate_present"] > 0.5
+].copy()
 
-    if not data[fraud_col].isin([0, 1]).all():
-        raise ValueError("Fraud marker must contain 0 or 1.")
+# Keep applications with a known fraud label
+data = df.loc[df["fraud_flag"].notna()].copy()
 
-    scores = data[fact_cols].apply(pd.to_numeric, errors="raise")
-    present = scores.fillna(0).ne(0)
-    fraud = data[fraud_col].eq(1)
+if not data["fraud_flag"].isin([0, 1]).all():
+    raise ValueError("fraud_flag must contain 0 or 1.")
 
-    total_fraud = fraud.sum()
-    baseline_rate = fraud.mean()
-
-    # A combination cannot have more hits than any individual member
-    eligible_facts = present.columns[
-        present.sum() >= min_applications
-    ]
-
-    rows = []
-
-    for facts in combinations(eligible_facts, combination_size):
-        hit = present[list(facts)].all(axis=1)
-
-        n_present = int(hit.sum())
-        if n_present < min_applications:
-            continue
-
-        fraud_present = int((hit & fraud).sum())
-        n_absent = int((~hit).sum())
-        fraud_absent = int((~hit & fraud).sum())
-
-        rate_present = fraud_present / n_present
-        rate_absent = fraud_absent / n_absent if n_absent else np.nan
-
-        # Compare against the strongest individual fact in this group
-        best_single_rate = max(
-            fraud[present[fact]].mean() for fact in facts
-        )
-
-        rows.append({
-            "facts": " + ".join(facts),
-            "applications_present": n_present,
-            "fraud_present": fraud_present,
-            "fraud_rate_present": rate_present,
-            "fraud_rate_absent": rate_absent,
-            "lift": (
-                rate_present / baseline_rate
-                if baseline_rate else np.nan
-            ),
-            "fraud_capture": (
-                fraud_present / total_fraud
-                if total_fraud else np.nan
-            ),
-            "application_coverage": n_present / len(data),
-            "best_single_fact_fraud_rate": best_single_rate,
-            "gain_over_best_single_pp": (
-                rate_present - best_single_rate
-            ) * 100,
-        })
-
-    result = pd.DataFrame(rows)
-
-    if result.empty:
-        return result
-
-    return result.sort_values(
-        ["lift", "fraud_present"], ascending=False
-    ).reset_index(drop=True)
-
-pairs = rank_fact_combinations(
-    df,
-    fact_cols,
-    fraud_col="fraud_flag",
-    combination_size=2,
-    min_applications=100,  # Adjust for your population size
+present = (
+    data[fact_cols]
+    .apply(pd.to_numeric, errors="raise")
+    .fillna(0)
+    .ne(0)
 )
 
-display(pairs)
+# Match ANY selected combination
+# Within each combination, ALL its facts must be present
+matched = np.zeros(len(data), dtype=bool)
 
-triples = rank_fact_combinations(
-    df,
-    fact_cols,
-    fraud_col="fraud_flag",
-    combination_size=3,
-    min_applications=100,
-)
+for combination in selected["facts"]:
+    facts = combination.split(" + ")
+    matched |= present[facts].all(axis=1).to_numpy()
 
-display(triples)
+fraud = data["fraud_flag"].eq(1).to_numpy()
+
+total_matched = int(matched.sum())
+fraud_matched = int((matched & fraud).sum())
+genuine_matched = int((matched & ~fraud).sum())
+
+stats = pd.Series({
+    "selected_combinations": len(selected),
+    "applications_matched": total_matched,
+    "fraud_applications": fraud_matched,
+    "genuine_applications": genuine_matched,
+    "fraud_rate": (
+        fraud_matched / total_matched if total_matched else np.nan
+    ),
+    "genuine_to_fraud_ratio": (
+        genuine_matched / fraud_matched if fraud_matched else np.nan
+    ),
+    "fraud_capture": (
+        fraud_matched / fraud.sum() if fraud.sum() else np.nan
+    ),
+})
+
+display(stats)
+
+# Application-level records captured by these combinations
+matched_applications = data.iloc[np.flatnonzero(matched)].copy()
