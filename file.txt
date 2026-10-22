@@ -1,73 +1,62 @@
-# ------------------------------------------------------------
-# 1. Monthly alerts summary
-# Count each application once within each run month.
-# ------------------------------------------------------------
-base["run_month"] = base["RUN_DATE"].dt.to_period("M").astype("string")
+import numpy as np
+import pandas as pd
 
-monthly_apps = (
-    base.dropna(subset=["APPLICATION_NUMBER", "RUN_DATE"])
-    .groupby(["run_month", "APPLICATION_NUMBER"], as_index=False)
-    .agg(fraud_status=("CNF_FRAUD_IND", "max"))
-)
+def rank_fraud_facts(
+    df,
+    fact_cols,
+    fraud_col="fraud_flag",
+    absent_is_zero=False,
+):
+    # Exclude applications without a known fraud label
+    data = df.loc[df[fraud_col].notna(), fact_cols + [fraud_col]].copy()
 
-monthly_apps["genuine"] = monthly_apps["fraud_status"].eq(0)
-monthly_apps["fraud"] = monthly_apps["fraud_status"].eq(1)
-monthly_apps["unknown"] = monthly_apps["fraud_status"].isna()
+    if data.empty:
+        raise ValueError("No applications with a known fraud label.")
 
-monthly_alerts_summary = (
-    monthly_apps.groupby("run_month", as_index=False)
-    .agg(
-        alerts=("APPLICATION_NUMBER", "size"),
-        genuine_applications=("genuine", "sum"),
-        frauds=("fraud", "sum"),
-        unknown_status=("unknown", "sum")
+    if not data[fraud_col].isin([0, 1]).all():
+        raise ValueError("Fraud marker must contain only 0, 1, or missing values.")
+
+    fraud = data[fraud_col].astype(int)
+    total_apps = len(data)
+    total_fraud = fraud.sum()
+    baseline_rate = fraud.mean()
+
+    # Presence is separate from score: negative scores also count
+    present = data[fact_cols].notna()
+    if absent_is_zero:
+        present &= data[fact_cols].ne(0)
+
+    result = pd.DataFrame({
+        "applications_present": present.sum(),
+        "fraud_present": present.mul(fraud, axis=0).sum(),
+    }).rename_axis("fact").reset_index()
+
+    result["applications_absent"] = total_apps - result["applications_present"]
+    result["fraud_absent"] = total_fraud - result["fraud_present"]
+
+    result["fraud_rate_present"] = (
+        result["fraud_present"]
+        / result["applications_present"].replace(0, np.nan)
     )
-)
-
-monthly_alerts_summary["FPR"] = (
-    monthly_alerts_summary["genuine_applications"]
-    .div(monthly_alerts_summary["frauds"].replace(0, np.nan))
-)
-
-display(monthly_alerts_summary)
-
-
-# ------------------------------------------------------------
-# 2. Monthly utilization summary — unblocked cards
-# Uses the card-level report from the previous code.
-# ------------------------------------------------------------
-monthly_unblocked = report.loc[report["unblocked"]].copy()
-
-monthly_unblocked["run_month"] = (
-    monthly_unblocked["RUN_DATE"].dt.to_period("M").astype("string")
-)
-
-bands = ["0–10%", "10–30%", "30–50%", "50–80%", "80%+",
-         "Unknown credit limit"]
-
-monthly_unblocked["utilization_band"] = (
-    pd.cut(
-        monthly_unblocked["utilization_pct"],
-        bins=[0, 10, 30, 50, 80, np.inf],
-        labels=bands[:-1],
-        right=False
+    result["fraud_rate_absent"] = (
+        result["fraud_absent"]
+        / result["applications_absent"].replace(0, np.nan)
     )
-    .astype("string")
-    .fillna("Unknown credit limit")
-)
+    result["lift"] = (
+        result["fraud_rate_present"] / baseline_rate
+        if baseline_rate > 0 else np.nan
+    )
+    result["fraud_capture"] = (
+        result["fraud_present"] / total_fraud
+        if total_fraud > 0 else np.nan
+    )
+    result["application_coverage"] = (
+        result["applications_present"] / total_apps
+    )
+    result["rate_difference_pp"] = 100 * (
+        result["fraud_rate_present"] - result["fraud_rate_absent"]
+    )
 
-monthly_utilization_summary = (
-    monthly_unblocked
-    .groupby(["run_month", "utilization_band"])["CARD_NUMBER"]
-    .nunique()
-    .unstack("utilization_band", fill_value=0)
-    .reindex(columns=bands, fill_value=0)
-    .rename_axis(columns=None)
-    .reset_index()
-)
-
-monthly_utilization_summary["total_unblocked_cards"] = (
-    monthly_utilization_summary[bands].sum(axis=1)
-)
-
-display(monthly_utilization_summary)
+    return result.sort_values(
+        ["lift", "fraud_present"], ascending=False
+    ).reset_index(drop=True)
