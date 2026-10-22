@@ -1,57 +1,13 @@
-import numpy as np
-import pandas as pd
+selected = selected.dropna(subset=["facts"]).copy()
 
-# Use pairs, triples, or combine both:
-combination_results = pd.concat([pairs, triples], ignore_index=True)
+facts = selected["facts"].astype("string").str.strip()
 
-selected = combination_results.loc[
-    combination_results["fraud_rate_present"] > 0.5
+selected = selected.loc[
+    facts.notna()
+    & facts.ne("")
+    & ~facts.str.lower().isin(["nan", "none", "null"])
 ].copy()
-
-# Keep applications with a known fraud label
-data = df.loc[df["fraud_flag"].notna()].copy()
-
-if not data["fraud_flag"].isin([0, 1]).all():
-    raise ValueError("fraud_flag must contain 0 or 1.")
-
-present = (
-    data[fact_cols]
-    .apply(pd.to_numeric, errors="raise")
-    .fillna(0)
-    .ne(0)
-)
-
-# Match ANY selected combination
-# Within each combination, ALL its facts must be present
-matched = np.zeros(len(data), dtype=bool)
 
 for combination in selected["facts"]:
     facts = combination.split(" + ")
     matched |= present[facts].all(axis=1).to_numpy()
-
-fraud = data["fraud_flag"].eq(1).to_numpy()
-
-total_matched = int(matched.sum())
-fraud_matched = int((matched & fraud).sum())
-genuine_matched = int((matched & ~fraud).sum())
-
-stats = pd.Series({
-    "selected_combinations": len(selected),
-    "applications_matched": total_matched,
-    "fraud_applications": fraud_matched,
-    "genuine_applications": genuine_matched,
-    "fraud_rate": (
-        fraud_matched / total_matched if total_matched else np.nan
-    ),
-    "genuine_to_fraud_ratio": (
-        genuine_matched / fraud_matched if fraud_matched else np.nan
-    ),
-    "fraud_capture": (
-        fraud_matched / fraud.sum() if fraud.sum() else np.nan
-    ),
-})
-
-display(stats)
-
-# Application-level records captured by these combinations
-matched_applications = data.iloc[np.flatnonzero(matched)].copy()
