@@ -1,6 +1,1 @@
-Hi Team,
-
-The Precision Score file is currently unavailable. We are already coordinating with the Equifax team through a separate email thread to resolve this issue.
-
-Best regards,
-Yash
+spark.table("tsys.v_cfm_tsys_tdct_acct_slim").printSchema()
