@@ -1,16 +1,8 @@
-import pandas as pd
+Hi Ahmet,
 
-fraud_cols = ["CONFIRMED_FRAUD_MBNA", "CONFIRMED_FRAUD_TDCT"]
-date_cols = ["SEC_FRAUD_STAT_DT_MBNA", "SEC_FRAUD_STAT_DT_TDCT"]
+We have uploaded the first fraud feedback file containing fraudulent applications from June 2026 to the ORD8681_Manual folder.
 
-df["CONFIRMED_FRAUD"] = (
-    df[fraud_cols]
-    .apply(pd.to_numeric, errors="coerce")
-    .max(axis=1)
-)
+Could you please confirm whether the file was received and processed successfully, or if any modifications are required?
 
-df["SEC_FRAUD_STAT_DT"] = (
-    df[date_cols]
-    .apply(lambda col: pd.to_datetime(col, errors="coerce"))
-    .max(axis=1)
-)
+Best regards,
+Yash
