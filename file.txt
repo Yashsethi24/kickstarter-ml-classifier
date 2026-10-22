@@ -1,13 +1,30 @@
-selected = selected.dropna(subset=["facts"]).copy()
+import pandas as pd
 
-facts = selected["facts"].astype("string").str.strip()
+data = df.copy()  # Replace df with your dataframe name
 
-selected = selected.loc[
-    facts.notna()
-    & facts.ne("")
-    & ~facts.str.lower().isin(["nan", "none", "null"])
-].copy()
+data["load_month"] = (
+    pd.to_datetime(data["Load_Date"], errors="raise")
+    .dt.to_period("M")
+    .astype("string")
+)
 
-for combination in selected["facts"]:
-    facts = combination.split(" + ")
-    matched |= present[facts].all(axis=1).to_numpy()
+data["confirmed_app"] = data["Application_Number"].where(
+    pd.to_numeric(data["CONFIRMED_FRAUD"], errors="raise").eq(1)
+)
+
+data["suspected_app"] = data["Application_Number"].where(
+    pd.to_numeric(data["SUSPECTED_FRAUD"], errors="raise").eq(1)
+)
+
+summary = (
+    data.groupby("load_month", dropna=False)
+    .agg(
+        number_of_applications=("Application_Number", "nunique"),
+        confirmed_fraud_applications=("confirmed_app", "nunique"),
+        suspected_fraud_applications=("suspected_app", "nunique"),
+    )
+    .reset_index()
+    .sort_values("load_month")
+)
+
+display(summary)
