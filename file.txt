@@ -1,48 +1,27 @@
-import pandas as pd
+balance = pd.to_numeric(slim_pd["CUR_BAL_TOT"], errors="raise")
 
-# Clean status values
-secure_fraud = slim_pd["STC_SECURE_FRAUD"].astype("string").str.strip()
-tiered_auth = slim_pd["STATC_TIERED_AUTH"].astype("string").str.strip()
-
-# Convert dates — set format explicitly if needed, e.g. format="%Y%m%d"
-open_date = pd.to_datetime(
-    slim_pd["OPEN_DT"].astype("string").str.strip(),
-    errors="coerce",
+slim_pd["confirmed_fraud_balance"] = balance.where(
+    pd.to_numeric(slim_pd["CONFIRMED_FRAUD"], errors="raise").eq(1),
+    0,
 )
 
-fraud_date = pd.to_datetime(
-    slim_pd["SEC_FRAUD_STAT_DT"].astype("string").str.strip(),
-    errors="coerce",
+slim_pd["suspected_fraud_balance"] = balance.where(
+    pd.to_numeric(slim_pd["SUSPECTED_FRAUD"], errors="raise").eq(1),
+    0,
 )
 
-slim_pd["days_to_fraud"] = (
-    fraud_date.dt.normalize() - open_date.dt.normalize()
-).dt.days
-
-status_present = (
-    secure_fraud.notna()
-    & ~secure_fraud.str.lower().isin(["", "null", "none", "nan"])
+summary = (
+    slim_pd.groupby("load_month", dropna=False)
+    .agg(
+        number_of_applications=("APPLICATION_NUMBER", "nunique"),
+        confirmed_fraud_applications=("confirmed_app", "nunique"),
+        suspected_fraud_applications=("suspected_app", "nunique"),
+        total_fraud_applications=("fraud_app", "nunique"),
+        confirmed_fraud_balance=("confirmed_fraud_balance", "sum"),
+        suspected_fraud_balance=("suspected_fraud_balance", "sum"),
+    )
+    .reset_index()
+    .sort_values("load_month")
 )
 
-slim_pd["CONFIRMED_FRAUD"] = (
-    status_present
-    & slim_pd["days_to_fraud"].between(0, 90)
-).fillna(False).astype(int)
-
-slim_pd["SUSPECTED_FRAUD"] = (
-    tiered_auth.str.upper().eq("L7")
-).fillna(False).astype(int)
-
-display(
-    slim_pd[
-        [
-            "APPLICATION_NUMBER",
-            "OPEN_DT",
-            "SEC_FRAUD_STAT_DT",
-            "STC_SECURE_FRAUD",
-            "days_to_fraud",
-            "CONFIRMED_FRAUD",
-            "SUSPECTED_FRAUD",
-        ]
-    ].head(20)
-)
+display(summary)
