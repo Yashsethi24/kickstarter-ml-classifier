@@ -1,27 +1,6 @@
-balance = pd.to_numeric(slim_pd["CUR_BAL_TOT"], errors="raise")
+Hi Team,
 
-slim_pd["confirmed_fraud_balance"] = balance.where(
-    pd.to_numeric(slim_pd["CONFIRMED_FRAUD"], errors="raise").eq(1),
-    0,
-)
+The Precision Score file is currently unavailable. We are already coordinating with the Equifax team through a separate email thread to resolve this issue.
 
-slim_pd["suspected_fraud_balance"] = balance.where(
-    pd.to_numeric(slim_pd["SUSPECTED_FRAUD"], errors="raise").eq(1),
-    0,
-)
-
-summary = (
-    slim_pd.groupby("load_month", dropna=False)
-    .agg(
-        number_of_applications=("APPLICATION_NUMBER", "nunique"),
-        confirmed_fraud_applications=("confirmed_app", "nunique"),
-        suspected_fraud_applications=("suspected_app", "nunique"),
-        total_fraud_applications=("fraud_app", "nunique"),
-        confirmed_fraud_balance=("confirmed_fraud_balance", "sum"),
-        suspected_fraud_balance=("suspected_fraud_balance", "sum"),
-    )
-    .reset_index()
-    .sort_values("load_month")
-)
-
-display(summary)
+Best regards,
+Yash
