@@ -1,95 +1,48 @@
-from pyspark.sql import functions as F
-
-# 1. Unique application IDs from your pandas dataset
-ids = (
-    df["Application_Number"]
-    .dropna()
-    .astype(str)
-    .str.strip()
-)
-ids = ids[ids.ne("")].drop_duplicates()
-
-application_ids = spark.createDataFrame(
-    [(value,) for value in ids],
-    "APPLICATION_NUMBER string",
-)
-
-# 2. Get account numbers for these applications
-accounts = (
+# Application-to-account mapping
+application_accounts = (
     spark.table("hive_metastore.fiqm.applications")
     .join(application_ids, "APPLICATION_NUMBER", "left_semi")
-    .select(F.trim("ACCOUNT_NUMBER").alias("ACCOUNT_NUMBER"))
+    .select(
+        "APPLICATION_NUMBER",
+        F.trim("ACCOUNT_NUMBER").alias("ACCOUNT_NUMBER"),
+    )
     .filter(
         F.col("ACCOUNT_NUMBER").isNotNull()
         & (F.col("ACCOUNT_NUMBER") != "")
     )
-    .dropDuplicates(["ACCOUNT_NUMBER"])
-    # Normalize numeric identifiers without casting strings to double
+    .dropDuplicates(["APPLICATION_NUMBER", "ACCOUNT_NUMBER"])
     .withColumn(
         "join_key",
         F.expr("try_cast(ACCOUNT_NUMBER AS DECIMAL(38,0))"),
     )
 )
 
-# Reject invalid or fractional identifiers
-invalid_accounts = accounts.filter(
-    ~F.col("ACCOUNT_NUMBER").rlike(r"^[0-9]+$")
-    | F.col("join_key").isNull()
-)
-
-if invalid_accounts.limit(1).count():
-    raise ValueError("Some ACCOUNT_NUMBER values are not valid integer identifiers.")
-
-# Count each normalized account key once
-account_keys = accounts.select("join_key").dropDuplicates()
-
-# 3. Prepare MBNA SLIM join key
-slim = (
+# SLIM data with the corrected join key
+slim_source = (
     spark.table("tsys.v_cfm_tsys_mbna_acct_slim")
-    .select("APPLID", "CUR_BAL_TOT", "AS_OF_DATE")
-    .filter(
-        F.col("APPLID").isNotNull()
-        & (F.col("APPLID") == F.floor("APPLID"))
-    )
     .withColumn(
         "join_key",
         F.expr("try_cast(APPLID AS DECIMAL(38,0))"),
     )
-    .join(account_keys, "join_key", "left_semi")
 )
 
-# If needed, select your intended snapshot here:
-# slim = slim.filter(F.col("AS_OF_DATE") == F.lit("2026-10-21").cast("date"))
-
-# Prevent multiple SLIM records from inflating balances
-duplicates = (
-    slim.groupBy("join_key")
-    .count()
-    .filter(F.col("count") > 1)
-)
-
-if duplicates.limit(1).count():
-    raise ValueError(
-        "Multiple SLIM rows exist per APPLID. Select the intended "
-        "snapshot before calculating the total."
+# Add application number and application-table account number to SLIM
+slim = (
+    slim_source.alias("s")
+    .join(
+        application_accounts.alias("a"),
+        F.col("s.join_key") == F.col("a.join_key"),
+        "inner",
     )
-
-# 4. Join balances, keeping unmatched accounts
-account_balances = account_keys.join(
-    slim.withColumn("slim_matched", F.lit(1)),
-    "join_key",
-    "left",
+    .select(
+        F.col("a.APPLICATION_NUMBER"),
+        F.col("a.ACCOUNT_NUMBER").alias("APPLICATION_ACCOUNT_NUMBER"),
+        *[
+            F.col(f"s.{col}")
+            for col in slim_source.columns
+            if col != "join_key"
+        ],
+    )
 )
 
-# 5. Total balance and match coverage
-balance_summary = account_balances.agg(
-    F.count("*").alias("unique_account_keys"),
-    F.count("slim_matched").alias("accounts_found_in_slim"),
-    F.sum(
-        F.when(F.col("slim_matched").isNull(), 1).otherwise(0)
-    ).alias("accounts_not_found_in_slim"),
-    F.count("CUR_BAL_TOT").alias("accounts_with_balance"),
-    F.sum("CUR_BAL_TOT").alias("sum_current_total_balance"),
-)
-
-display(balance_summary)
+display(slim)
