@@ -1,26 +1,77 @@
-fact_cols = [
-    "Email.DoesCustomerEmailContainMailboxIssue",
-    "Email.IsCustomerEmailPopularityLow",
-    "Email.IsCustomerEmailVelocityLow",
-    # Add your remaining fact columns
-]
-
-ranking = rank_fraud_facts(
-    df,
-    fact_cols,
-    fraud_col="fraud_flag",
-    absent_is_zero=False,  # Set True only if 0 means the fact did not fire
-)
-
-# Example volume filter; adjust to your data size
-display(
-    ranking.loc[ranking["applications_present"] >= 100]
-    .style.format({
-        "fraud_rate_present": "{:.2%}",
-        "fraud_rate_absent": "{:.2%}",
-        "lift": "{:.2f}",
-        "fraud_capture": "{:.2%}",
-        "application_coverage": "{:.2%}",
-        "rate_difference_pp": "{:.2f}",
-    })
-)
+E610201753
+E610201561
+E610201587
+E610201633
+E610201516
+E610201929
+E610202531
+E610202545
+E610201686
+E610201857
+E610202814
+E610203006
+E610203034
+E610202971
+E610202575
+E610202778
+E610202929
+E610202302
+E610202354
+E610201448
+E610201769
+E610202522
+E610202060
+E610202216
+E610202512
+E610202141
+E610202239
+E610202540
+E610202412
+E610203035
+E610203025
+E610203000
+E610203009
+E610203004
+E610202576
+E610203017
+E610202923
+E610203053
+E610202950
+E610202722
+E610202608
+E610202982
+E610203057
+E610202992
+E610202975
+E610203061
+E610201867
+E610201860
+E610201747
+E610201620
+E610202280
+E610201888
+E610202205
+E610202316
+E610202044
+E610201641
+E610202015
+E610201657
+E610202032
+E610202006
+E610201451
+E610201931
+E610201856
+E610202221
+E610202410
+E610201971
+E610201900
+E610201651
+E610202290
+E610202048
+E610202031
+E610201906
+E610201565
+E610201920
+E610202021
+E610201631
+E610202070
