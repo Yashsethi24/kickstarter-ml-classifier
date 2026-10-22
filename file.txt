@@ -1,77 +1,101 @@
-E610201753
-E610201561
-E610201587
-E610201633
-E610201516
-E610201929
-E610202531
-E610202545
-E610201686
-E610201857
-E610202814
-E610203006
-E610203034
-E610202971
-E610202575
-E610202778
-E610202929
-E610202302
-E610202354
-E610201448
-E610201769
-E610202522
-E610202060
-E610202216
-E610202512
-E610202141
-E610202239
-E610202540
-E610202412
-E610203035
-E610203025
-E610203000
-E610203009
-E610203004
-E610202576
-E610203017
-E610202923
-E610203053
-E610202950
-E610202722
-E610202608
-E610202982
-E610203057
-E610202992
-E610202975
-E610203061
-E610201867
-E610201860
-E610201747
-E610201620
-E610202280
-E610201888
-E610202205
-E610202316
-E610202044
-E610201641
-E610202015
-E610201657
-E610202032
-E610202006
-E610201451
-E610201931
-E610201856
-E610202221
-E610202410
-E610201971
-E610201900
-E610201651
-E610202290
-E610202048
-E610202031
-E610201906
-E610201565
-E610201920
-E610202021
-E610201631
-E610202070
+from itertools import combinations
+import numpy as np
+import pandas as pd
+
+def rank_fact_combinations(
+    df,
+    fact_cols,
+    fraud_col="fraud_flag",
+    combination_size=2,
+    min_applications=100,
+):
+    data = df.loc[df[fraud_col].notna()].copy()
+
+    if data.empty:
+        raise ValueError("No applications with a known fraud label.")
+
+    if not data[fraud_col].isin([0, 1]).all():
+        raise ValueError("Fraud marker must contain 0 or 1.")
+
+    scores = data[fact_cols].apply(pd.to_numeric, errors="raise")
+    present = scores.fillna(0).ne(0)
+    fraud = data[fraud_col].eq(1)
+
+    total_fraud = fraud.sum()
+    baseline_rate = fraud.mean()
+
+    # A combination cannot have more hits than any individual member
+    eligible_facts = present.columns[
+        present.sum() >= min_applications
+    ]
+
+    rows = []
+
+    for facts in combinations(eligible_facts, combination_size):
+        hit = present[list(facts)].all(axis=1)
+
+        n_present = int(hit.sum())
+        if n_present < min_applications:
+            continue
+
+        fraud_present = int((hit & fraud).sum())
+        n_absent = int((~hit).sum())
+        fraud_absent = int((~hit & fraud).sum())
+
+        rate_present = fraud_present / n_present
+        rate_absent = fraud_absent / n_absent if n_absent else np.nan
+
+        # Compare against the strongest individual fact in this group
+        best_single_rate = max(
+            fraud[present[fact]].mean() for fact in facts
+        )
+
+        rows.append({
+            "facts": " + ".join(facts),
+            "applications_present": n_present,
+            "fraud_present": fraud_present,
+            "fraud_rate_present": rate_present,
+            "fraud_rate_absent": rate_absent,
+            "lift": (
+                rate_present / baseline_rate
+                if baseline_rate else np.nan
+            ),
+            "fraud_capture": (
+                fraud_present / total_fraud
+                if total_fraud else np.nan
+            ),
+            "application_coverage": n_present / len(data),
+            "best_single_fact_fraud_rate": best_single_rate,
+            "gain_over_best_single_pp": (
+                rate_present - best_single_rate
+            ) * 100,
+        })
+
+    result = pd.DataFrame(rows)
+
+    if result.empty:
+        return result
+
+    return result.sort_values(
+        ["lift", "fraud_present"], ascending=False
+    ).reset_index(drop=True)
+
+pairs = rank_fact_combinations(
+    df,
+    fact_cols,
+    fraud_col="fraud_flag",
+    combination_size=2,
+    min_applications=100,  # Adjust for your population size
+)
+
+display(pairs)
+
+triples = rank_fact_combinations(
+    df,
+    fact_cols,
+    fraud_col="fraud_flag",
+    combination_size=3,
+    min_applications=100,
+)
+
+display(triples)
