@@ -1,104 +1,16 @@
-from pyspark.sql import DataFrame
-from pyspark.sql import functions as F
+import pandas as pd
 
-app_col = "Application_Number"  # Use the exact column name in df
+fraud_cols = ["CONFIRMED_FRAUD_MBNA", "CONFIRMED_FRAUD_TDCT"]
+date_cols = ["SEC_FRAUD_STAT_DT_MBNA", "SEC_FRAUD_STAT_DT_TDCT"]
 
-# Works with either a pandas or Spark dataframe.
-if isinstance(df, DataFrame):
-    selected = df.select(
-        F.trim(F.col(app_col).cast("string")).alias("APPLICATION_NUMBER")
-    )
-else:
-    app_numbers = (
-        df[app_col]
-        .dropna()
-        .astype(str)
-        .str.strip()
-    )
-    selected = spark.createDataFrame(
-        [(x,) for x in app_numbers.drop_duplicates()],
-        "APPLICATION_NUMBER string"
-    )
-
-(
-    selected
-    .filter(F.col("APPLICATION_NUMBER").startswith("3"))
-    .dropDuplicates(["APPLICATION_NUMBER"])
-    .createOrReplaceTempView("selected_application_numbers")
+df["CONFIRMED_FRAUD"] = (
+    df[fraud_cols]
+    .apply(pd.to_numeric, errors="coerce")
+    .max(axis=1)
 )
 
-application_card_fraud = spark.sql(r"""
-WITH fiqm AS (
-    SELECT
-        A.*,
-        regexp_replace(
-            regexp_replace(
-                lower(A.PRIMARY_FIRST_NAME),
-                r'^(mr|mrs|ms|miss|dr|prof|mme)\.?\s+', ''
-            ),
-            '[^a-z0-9]', ''
-        ) AS first_name_clean,
-        regexp_replace(
-            regexp_replace(
-                lower(A.PRIMARY_FAMILY_NAME),
-                r'^(mr|mrs|ms|miss|dr|prof|mme)\.?\s+', ''
-            ),
-            '[^a-z0-9]', ''
-        ) AS family_name_clean
-    FROM hive_metastore.fiqm.applications A
-    LEFT SEMI JOIN selected_application_numbers D
-        ON trim(A.APPLICATION_NUMBER) = D.APPLICATION_NUMBER
-),
-slim AS (
-    SELECT
-        S.*,
-        regexp_replace(
-            regexp_replace(
-                lower(S.NAME),
-                r'^(mr|mrs|ms|miss|dr|prof|mme)\.?\s+', ''
-            ),
-            '[^a-z0-9]', ''
-        ) AS name_clean
-    FROM tsys.v_cfm_tsys_tdct_acct_slim S
+df["SEC_FRAUD_STAT_DT"] = (
+    df[date_cols]
+    .apply(lambda col: pd.to_datetime(col, errors="coerce"))
+    .max(axis=1)
 )
-SELECT
-    D.APPLICATION_NUMBER,
-    A.APPLICATION_DATE,
-    A.PRIMARY_FIRST_NAME,
-    A.PRIMARY_FAMILY_NAME,
-
-    S.ACCT_NUM,
-    S.ACCT_NUM_TA1,
-    S.APPLID AS SLIM_APPLID,
-    S.NAME AS CARDHOLDER_NAME,
-    S.OPEN_DT,
-    S.CUR_BAL_TOT,
-
-    S.STF_FRAUD,
-    S.FRAUD_FLAG_DT,
-    S.STC_SECURE_FRAUD,
-    S.SEC_FRAUD_STAT_DT,
-
-    S.AS_OF_DATE AS SLIM_AS_OF_DATE,
-
-    A.APPLICATION_NUMBER IS NOT NULL AS FIQM_FOUND,
-    S.name_clean IS NOT NULL AS CARD_MATCH_FOUND
-
-FROM selected_application_numbers D
-
-LEFT JOIN fiqm A
-    ON D.APPLICATION_NUMBER = trim(A.APPLICATION_NUMBER)
-
-LEFT JOIN slim S
-    ON try_cast(A.DOB AS DATE) = try_cast(S.BIRTH_DT AS DATE)
-    AND length(A.first_name_clean) > 0
-    AND length(A.family_name_clean) > 0
-    AND S.name_clean LIKE concat('%', A.first_name_clean, '%')
-    AND S.name_clean LIKE concat('%', A.family_name_clean, '%')
-    AND try_cast(S.OPEN_DT AS DATE) >= A.APPLICATION_DATE
-""")
-
-display(application_card_fraud)
-
-# Optional pandas result:
-# application_card_fraud_pd = application_card_fraud.toPandas()
