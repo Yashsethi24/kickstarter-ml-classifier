@@ -1,62 +1,26 @@
-import numpy as np
-import pandas as pd
+fact_cols = [
+    "Email.DoesCustomerEmailContainMailboxIssue",
+    "Email.IsCustomerEmailPopularityLow",
+    "Email.IsCustomerEmailVelocityLow",
+    # Add your remaining fact columns
+]
 
-def rank_fraud_facts(
+ranking = rank_fraud_facts(
     df,
     fact_cols,
     fraud_col="fraud_flag",
-    absent_is_zero=False,
-):
-    # Exclude applications without a known fraud label
-    data = df.loc[df[fraud_col].notna(), fact_cols + [fraud_col]].copy()
+    absent_is_zero=False,  # Set True only if 0 means the fact did not fire
+)
 
-    if data.empty:
-        raise ValueError("No applications with a known fraud label.")
-
-    if not data[fraud_col].isin([0, 1]).all():
-        raise ValueError("Fraud marker must contain only 0, 1, or missing values.")
-
-    fraud = data[fraud_col].astype(int)
-    total_apps = len(data)
-    total_fraud = fraud.sum()
-    baseline_rate = fraud.mean()
-
-    # Presence is separate from score: negative scores also count
-    present = data[fact_cols].notna()
-    if absent_is_zero:
-        present &= data[fact_cols].ne(0)
-
-    result = pd.DataFrame({
-        "applications_present": present.sum(),
-        "fraud_present": present.mul(fraud, axis=0).sum(),
-    }).rename_axis("fact").reset_index()
-
-    result["applications_absent"] = total_apps - result["applications_present"]
-    result["fraud_absent"] = total_fraud - result["fraud_present"]
-
-    result["fraud_rate_present"] = (
-        result["fraud_present"]
-        / result["applications_present"].replace(0, np.nan)
-    )
-    result["fraud_rate_absent"] = (
-        result["fraud_absent"]
-        / result["applications_absent"].replace(0, np.nan)
-    )
-    result["lift"] = (
-        result["fraud_rate_present"] / baseline_rate
-        if baseline_rate > 0 else np.nan
-    )
-    result["fraud_capture"] = (
-        result["fraud_present"] / total_fraud
-        if total_fraud > 0 else np.nan
-    )
-    result["application_coverage"] = (
-        result["applications_present"] / total_apps
-    )
-    result["rate_difference_pp"] = 100 * (
-        result["fraud_rate_present"] - result["fraud_rate_absent"]
-    )
-
-    return result.sort_values(
-        ["lift", "fraud_present"], ascending=False
-    ).reset_index(drop=True)
+# Example volume filter; adjust to your data size
+display(
+    ranking.loc[ranking["applications_present"] >= 100]
+    .style.format({
+        "fraud_rate_present": "{:.2%}",
+        "fraud_rate_absent": "{:.2%}",
+        "lift": "{:.2f}",
+        "fraud_capture": "{:.2%}",
+        "application_coverage": "{:.2%}",
+        "rate_difference_pp": "{:.2f}",
+    })
+)
