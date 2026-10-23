@@ -1,7 +1,35 @@
-Good morning, Vasi! Happy Friday!
+%sql
+WITH ais AS (
+    SELECT DISTINCT TRIM(CAST(customerAcctNumber AS STRING)) AS acct
+    FROM cad_fico.ais
+    WHERE customerAcctNumber IS NOT NULL
+),
+account AS (
+    SELECT DISTINCT TRIM(CAST(header_customerAcctNumber AS STRING)) AS acct
+    FROM cad_fico.account
+    WHERE header_customerAcctNumber IS NOT NULL
+)
 
-I had a detailed discussion with Divya yesterday. The current SBL data includes the name, address, and DOB, which we believe belong to the guarantor rather than the business.
+SELECT 'AIS Total' AS metric, COUNT(*) AS cnt FROM ais
 
-However, we cannot confirm this yet, as BBHUB is not live.
+UNION ALL
 
-We agreed that Divya will provide the guarantor's CIF ID, which we can use to map and validate the information on our end.
+SELECT 'Account Total', COUNT(*) FROM account
+
+UNION ALL
+
+SELECT 'Common Accounts', COUNT(*)
+FROM ais
+INNER JOIN account USING (acct)
+
+UNION ALL
+
+SELECT 'Only in AIS', COUNT(*)
+FROM ais
+LEFT ANTI JOIN account USING (acct)
+
+UNION ALL
+
+SELECT 'Only in Account', COUNT(*)
+FROM account
+LEFT ANTI JOIN ais USING (acct);
