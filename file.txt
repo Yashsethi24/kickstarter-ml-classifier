@@ -1,8 +1,2 @@
-Hi Ahmet,
-
-We have uploaded the first fraud feedback file containing fraudulent applications from June 2026 to the ORD8681_Manual folder.
-
-Could you please confirm whether the file was received and processed successfully, or if any modifications are required?
-
-Best regards,
-Yash
+Hello Adam,
+This is the test line.
