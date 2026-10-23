@@ -1,4 +1,21 @@
-fact_scores = fact_scores.explode("scores", ignore_index=True)
-fact_scores["scores"] = pd.to_numeric(fact_scores["scores"])
+# Each fact must have one unique score
+scores = fact_scores[["fact", "scores"]].drop_duplicates().copy()
+scores["scores"] = pd.to_numeric(scores["scores"], errors="raise")
 
-display(fact_scores)
+if scores["fact"].duplicated().any():
+    raise ValueError("Some facts have multiple scores. Resolve these first.")
+
+score_lookup = scores.set_index("fact")["scores"].to_dict()
+
+def get_total_score(combination):
+    facts = [fact.strip() for fact in combination.split(" + ")]
+
+    missing = [fact for fact in facts if fact not in score_lookup]
+    if missing:
+        raise ValueError(f"Scores missing for: {missing}")
+
+    return sum(score_lookup[fact] for fact in facts)
+
+selected["total_score"] = selected["facts"].apply(get_total_score)
+
+display(selected)
