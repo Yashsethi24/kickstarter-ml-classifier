@@ -1,29 +1,8 @@
-monthly_apps["confirmed_genuine"] = monthly_apps["conf_fraud_status"].eq(0)
-monthly_apps["confirmed_fraud"] = monthly_apps["conf_fraud_status"].eq(1)
-
-monthly_alerts_summary = (
-    monthly_apps.groupby("run_month", as_index=False)
-    .agg(
-        alerts=("APPLICATION_NUMBER", "size"),
-        genuine_applications=("genuine", "sum"),
-        frauds=("fraud", "sum"),
-        confirmed_genuine_applications=("confirmed_genuine", "sum"),
-        confirmed_frauds=("confirmed_fraud", "sum"),
-    )
+.withColumn(
+    "MERCHANT_NAME",
+    F.when(
+        F.col("MERCHANT_NAME").rlike(r"(?i)(amazon|amzn)")
+        | (F.upper(F.trim(F.col("MERCHANT_NAME"))) == "BUSINESS PRIME"),
+        F.lit("Amazon")
+    ).otherwise(F.col("MERCHANT_NAME"))
 )
-
-# Existing FPR: confirmed or suspected fraud.
-monthly_alerts_summary["FPR"] = (
-    monthly_alerts_summary["genuine_applications"]
-    .div(monthly_alerts_summary["frauds"].replace(0, np.nan))
-    .round(2)
-)
-
-# Confirmed-only FPR: CNF_FRAUD_IND = 0 / CNF_FRAUD_IND = 1.
-monthly_alerts_summary["confirmed_FPR"] = (
-    monthly_alerts_summary["confirmed_genuine_applications"]
-    .div(monthly_alerts_summary["confirmed_frauds"].replace(0, np.nan))
-    .round(2)
-)
-
-display(monthly_alerts_summary)
