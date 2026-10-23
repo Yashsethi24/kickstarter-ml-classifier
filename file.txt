@@ -1,2 +1,25 @@
-Hello Adam,
-This is the second test to check the speed and permissions.
+data = slim_pd.copy()
+
+for col in ["CONFIRMED_FRAUD", "SUSPECTED_FRAUD", "CUR_BAL_TOT"]:
+    data[col] = pd.to_numeric(data[col], errors="raise")
+
+data["confirmed_fraud_balance"] = data["CUR_BAL_TOT"].where(
+    data["CONFIRMED_FRAUD"].eq(1), 0
+)
+
+data["suspected_fraud_balance"] = data["CUR_BAL_TOT"].where(
+    data["SUSPECTED_FRAUD"].eq(1), 0
+)
+
+application_summary = (
+    data.groupby("APPLICATION_NUMBER", dropna=False)
+    .agg(
+        CONFIRMED_FRAUD=("CONFIRMED_FRAUD", "max"),
+        SUSPECTED_FRAUD=("SUSPECTED_FRAUD", "max"),
+        confirmed_fraud_balance=("confirmed_fraud_balance", "sum"),
+        suspected_fraud_balance=("suspected_fraud_balance", "sum"),
+    )
+    .reset_index()
+)
+
+display(application_summary)
