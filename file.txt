@@ -1,60 +1,40 @@
-%sql
-WITH combined AS (
-    SELECT DISTINCT
-        DATE_FORMAT(openDate, 'yyyy-MM') AS month,
-        TRIM(CAST(Account_Number AS STRING)) AS acct,
-        1 AS in_ais,
-        0 AS in_account
-    FROM final_data_ais_df
-    WHERE Account_Number IS NOT NULL
-      AND openDate >= '2026-01-01'
-      AND openDate < '2026-10-01'
+import pandas as pd
 
-    UNION ALL
+df = final_df.copy()
 
-    SELECT DISTINCT
-        DATE_FORMAT(openDate, 'yyyy-MM') AS month,
-        TRIM(CAST(Account_Number AS STRING)) AS acct,
-        0 AS in_ais,
-        1 AS in_account
-    FROM final_data_account_df
-    WHERE Account_Number IS NOT NULL
-      AND openDate >= '2026-01-01'
-      AND openDate < '2026-10-01'
-),
+# Normalize dates so the difference uses calendar days.
+open_dt = pd.to_datetime(df["OPEN_DT"], errors="coerce").dt.normalize()
+claim_dt = pd.to_datetime(df["CLM_DT"], errors="coerce").dt.normalize()
 
-comparison AS (
-    SELECT
-        month,
-        acct,
-        MAX(in_ais) AS in_ais,
-        MAX(in_account) AS in_account
-    FROM combined
-    GROUP BY month, acct
+df["days_to_claim"] = (claim_dt - open_dt).dt.days
+
+labels = [
+    "0-3 days",
+    "4-10 days",
+    "11-15 days",
+    "16-30 days",
+    "31-60 days",
+    "61-90 days",
+    "91-180 days",
+    "181+ days",
+]
+
+df["claim_day_bucket"] = pd.cut(
+    df["days_to_claim"],
+    bins=[-1, 3, 10, 15, 30, 60, 90, 180, float("inf")],
+    labels=labels,
+    right=True,
 )
 
-SELECT
-    month,
+summary_df = (
+    df.groupby(["CLM_YM", "claim_day_bucket"], observed=False)
+      .size()
+      .unstack("claim_day_bucket", fill_value=0)
+      .reindex(columns=labels, fill_value=0)
+      .rename_axis(columns=None)
+      .reset_index()
+)
 
-    SUM(in_ais) AS ais_total,
+summary_df["total"] = summary_df[labels].sum(axis=1)
 
-    SUM(in_account) AS account_total,
-
-    SUM(CASE
-        WHEN in_ais = 1 AND in_account = 1
-        THEN 1 ELSE 0
-    END) AS common_accounts,
-
-    SUM(CASE
-        WHEN in_ais = 1 AND in_account = 0
-        THEN 1 ELSE 0
-    END) AS only_in_ais,
-
-    SUM(CASE
-        WHEN in_ais = 0 AND in_account = 1
-        THEN 1 ELSE 0
-    END) AS only_in_account
-
-FROM comparison
-GROUP BY month
-ORDER BY month;
+display(summary_df)
