@@ -1,52 +1,29 @@
-from pyspark.sql import functions as F, Window
+monthly_apps["confirmed_genuine"] = monthly_apps["conf_fraud_status"].eq(0)
+monthly_apps["confirmed_fraud"] = monthly_apps["conf_fraud_status"].eq(1)
 
-# One mapping per account and claim month.
-claim_months = (
-    spark.createDataFrame(final_df[["ACCOUNTNUMBER", "CLM_YM"]])
-    .select(
-        F.col("ACCOUNTNUMBER").cast("string").alias("CARD_NUMBER"),
-        "CLM_YM"
-    )
-    .filter(F.col("CLM_YM").isNotNull())
-    .distinct()
-)
-
-merchant_summary = (
-    transactions_df
-    .join(claim_months, on="CARD_NUMBER", how="inner")
-    .withColumn(
-        "MERCHANT_NAME",
-        F.coalesce(F.trim(F.col("MERCHANT_NAME")), F.lit("UNKNOWN"))
-    )
-    .groupBy("CLM_YM", "MERCHANT_NAME")
+monthly_alerts_summary = (
+    monthly_apps.groupby("run_month", as_index=False)
     .agg(
-        F.count("*").alias("transaction_count"),
-        F.sum("AMOUNT_APPROVED").alias("total_amount_approved")
+        alerts=("APPLICATION_NUMBER", "size"),
+        genuine_applications=("genuine", "sum"),
+        frauds=("fraud", "sum"),
+        confirmed_genuine_applications=("confirmed_genuine", "sum"),
+        confirmed_frauds=("confirmed_fraud", "sum"),
     )
 )
 
-# Each merchant's share of transactions and approved amount that month.
-month_window = Window.partitionBy("CLM_YM")
-
-merchant_summary = (
-    merchant_summary
-    .withColumn(
-        "transaction_pct",
-        F.round(
-            100.0 * F.col("transaction_count")
-            / F.sum("transaction_count").over(month_window),
-            2
-        )
-    )
-    .withColumn(
-        "approved_amount_pct",
-        F.round(
-            100.0 * F.col("total_amount_approved")
-            / F.sum("total_amount_approved").over(month_window),
-            2
-        )
-    )
-    .orderBy("CLM_YM", F.desc("total_amount_approved"))
+# Existing FPR: confirmed or suspected fraud.
+monthly_alerts_summary["FPR"] = (
+    monthly_alerts_summary["genuine_applications"]
+    .div(monthly_alerts_summary["frauds"].replace(0, np.nan))
+    .round(2)
 )
 
-display(merchant_summary)
+# Confirmed-only FPR: CNF_FRAUD_IND = 0 / CNF_FRAUD_IND = 1.
+monthly_alerts_summary["confirmed_FPR"] = (
+    monthly_alerts_summary["confirmed_genuine_applications"]
+    .div(monthly_alerts_summary["confirmed_frauds"].replace(0, np.nan))
+    .round(2)
+)
+
+display(monthly_alerts_summary)
