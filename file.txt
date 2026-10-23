@@ -1,8 +1,34 @@
 Hi Team,
 
-I can confirm that the proposed approach meets our requirements, provided the report includes the guarantor's CIF ID, along with their details such as First Name, Last Name, Date of Birth, Email Address, and Address, as well as the associated business account information.
+Please find my responses below.
 
-We will be able to process the report manually once these details are provided in Excel format.
+1. Are all three scores used across TDCT and MBNA, or are specific scores used for each portfolio?
+
+Effective October 4, we expanded the model coverage to include the Personal Lending (PL) portfolio, covering both online and offline applications.
+
+- PL: Uses the First-Party (IDXFP101) score for alerting.
+- TDCT: Uses only the IDX score for alerting.
+- MBNA: Uses all three scores, each with its respective cutoff threshold.
+
+2. What is the purpose of each score, and how do they differ?
+
+The primary difference lies in the training data and the fraud types each model is designed to identify:
+
+- IDX: Trained on all fraud types to provide broader fraud detection coverage.
+- First-Party (FP): Trained specifically on first-party fraud cases.
+- Synthetic (SY): Trained specifically on synthetic identity fraud cases.
+
+Our approach varies by portfolio based on the observed fraud patterns and model performance:
+
+- PL: Since first-party fraud is more prevalent in this portfolio, we currently use only IDXFP101 for alerting.
+- MBNA: Initially, we used only the IDX score. However, our analysis identified incremental detection benefits from the FP and SY scores, so we incorporated both into our alerting strategies.
+- TDCT: We currently use only IDX but plan to evaluate the FP and SY scores for potential future implementation, subject to demonstrated incremental benefits.
+
+3. Given the relatively low performance of IDXFP101, why is the model still considered useful?
+
+Although IDXFP101 may show lower overall performance, its value lies in its ability to identify first-party fraud patterns that may not be effectively captured by the broader IDX model.
+
+Its effectiveness is therefore assessed based on portfolio-specific fraud patterns and incremental detection benefits rather than overall model performance alone.
 
 Best regards,
 Yash
