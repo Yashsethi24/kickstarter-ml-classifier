@@ -1,40 +1,52 @@
-import pandas as pd
+from pyspark.sql import functions as F, Window
 
-df = final_df.copy()
-
-# Normalize dates so the difference uses calendar days.
-open_dt = pd.to_datetime(df["OPEN_DT"], errors="coerce").dt.normalize()
-claim_dt = pd.to_datetime(df["CLM_DT"], errors="coerce").dt.normalize()
-
-df["days_to_claim"] = (claim_dt - open_dt).dt.days
-
-labels = [
-    "0-3 days",
-    "4-10 days",
-    "11-15 days",
-    "16-30 days",
-    "31-60 days",
-    "61-90 days",
-    "91-180 days",
-    "181+ days",
-]
-
-df["claim_day_bucket"] = pd.cut(
-    df["days_to_claim"],
-    bins=[-1, 3, 10, 15, 30, 60, 90, 180, float("inf")],
-    labels=labels,
-    right=True,
+# One mapping per account and claim month.
+claim_months = (
+    spark.createDataFrame(final_df[["ACCOUNTNUMBER", "CLM_YM"]])
+    .select(
+        F.col("ACCOUNTNUMBER").cast("string").alias("CARD_NUMBER"),
+        "CLM_YM"
+    )
+    .filter(F.col("CLM_YM").isNotNull())
+    .distinct()
 )
 
-summary_df = (
-    df.groupby(["CLM_YM", "claim_day_bucket"], observed=False)
-      .size()
-      .unstack("claim_day_bucket", fill_value=0)
-      .reindex(columns=labels, fill_value=0)
-      .rename_axis(columns=None)
-      .reset_index()
+merchant_summary = (
+    transactions_df
+    .join(claim_months, on="CARD_NUMBER", how="inner")
+    .withColumn(
+        "MERCHANT_NAME",
+        F.coalesce(F.trim(F.col("MERCHANT_NAME")), F.lit("UNKNOWN"))
+    )
+    .groupBy("CLM_YM", "MERCHANT_NAME")
+    .agg(
+        F.count("*").alias("transaction_count"),
+        F.sum("AMOUNT_APPROVED").alias("total_amount_approved")
+    )
 )
 
-summary_df["total"] = summary_df[labels].sum(axis=1)
+# Each merchant's share of transactions and approved amount that month.
+month_window = Window.partitionBy("CLM_YM")
 
-display(summary_df)
+merchant_summary = (
+    merchant_summary
+    .withColumn(
+        "transaction_pct",
+        F.round(
+            100.0 * F.col("transaction_count")
+            / F.sum("transaction_count").over(month_window),
+            2
+        )
+    )
+    .withColumn(
+        "approved_amount_pct",
+        F.round(
+            100.0 * F.col("total_amount_approved")
+            / F.sum("total_amount_approved").over(month_window),
+            2
+        )
+    )
+    .orderBy("CLM_YM", F.desc("total_amount_approved"))
+)
+
+display(merchant_summary)
