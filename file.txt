@@ -33,3 +33,21 @@ UNION ALL
 SELECT 'Only in Account', COUNT(*)
 FROM account
 LEFT ANTI JOIN ais USING (acct);
+
+
+
+%sql
+SELECT DISTINCT a.customerAcctNumber
+FROM cad_fico.ais a
+LEFT ANTI JOIN cad_fico.account b
+    ON TRIM(CAST(a.customerAcctNumber AS STRING)) =
+       TRIM(CAST(b.header_customerAcctNumber AS STRING));
+
+
+
+%sql
+SELECT DISTINCT b.header_customerAcctNumber
+FROM cad_fico.account b
+LEFT ANTI JOIN cad_fico.ais a
+    ON TRIM(CAST(b.header_customerAcctNumber AS STRING)) =
+       TRIM(CAST(a.customerAcctNumber AS STRING));
