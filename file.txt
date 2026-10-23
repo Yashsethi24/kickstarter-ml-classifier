@@ -1,30 +1,27 @@
-selected_facts = sorted({
-    fact.strip()
-    for combination in selected["facts"].dropna()
-    for fact in combination.split(" + ")
-    if fact.strip()
-})
+# Extract each fact's name and score from the original text
+extracted = (
+    df["facts_fired"]
+    .dropna()
+    .astype(str)
+    .str.extractall(
+        r"(?P<fact>[^|]+?)\s*\[(?:High|Low)\]\s*"
+        r"\((?P<score>[+-]?\d+(?:\.\d+)?)\)"
+    )
+    .reset_index(drop=True)
+)
 
-print(", ".join(selected_facts))
+extracted["fact"] = extracted["fact"].str.strip()
+extracted["score"] = pd.to_numeric(extracted["score"], errors="raise")
 
-
-fact_scores = pd.DataFrame([
-    {
-        "fact": fact,
-        "scores": sorted(
-            pd.to_numeric(df[fact], errors="raise")
-            .dropna()
-            .loc[lambda scores: scores.ne(0)]
-            .unique()
-            .tolist()
-        ),
-    }
-    for fact in selected_facts
-])
+fact_scores = (
+    extracted.loc[extracted["fact"].isin(selected_facts)]
+    .groupby("fact")["score"]
+    .agg(lambda scores: sorted(scores.unique().tolist()))
+    .reset_index(name="scores")
+)
 
 display(fact_scores)
 
-# Comma-separated facts with their scores
 print(", ".join(
     f"{row.fact}: {row.scores}"
     for row in fact_scores.itertuples(index=False)
