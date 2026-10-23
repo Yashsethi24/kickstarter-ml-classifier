@@ -1,2 +1,2 @@
 Hello Adam,
-This is the test line.
+This is the second test to check the speed and permissions.
