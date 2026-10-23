@@ -1,34 +1,60 @@
-Hi Team,
+%sql
+WITH combined AS (
+    SELECT DISTINCT
+        DATE_FORMAT(openDate, 'yyyy-MM') AS month,
+        TRIM(CAST(Account_Number AS STRING)) AS acct,
+        1 AS in_ais,
+        0 AS in_account
+    FROM final_data_ais_df
+    WHERE Account_Number IS NOT NULL
+      AND openDate >= '2026-01-01'
+      AND openDate < '2026-10-01'
 
-Please find my responses below.
+    UNION ALL
 
-1. Are all three scores used across TDCT and MBNA, or are specific scores used for each portfolio?
+    SELECT DISTINCT
+        DATE_FORMAT(openDate, 'yyyy-MM') AS month,
+        TRIM(CAST(Account_Number AS STRING)) AS acct,
+        0 AS in_ais,
+        1 AS in_account
+    FROM final_data_account_df
+    WHERE Account_Number IS NOT NULL
+      AND openDate >= '2026-01-01'
+      AND openDate < '2026-10-01'
+),
 
-Effective October 4, we expanded the model coverage to include the Personal Lending (PL) portfolio, covering both online and offline applications.
+comparison AS (
+    SELECT
+        month,
+        acct,
+        MAX(in_ais) AS in_ais,
+        MAX(in_account) AS in_account
+    FROM combined
+    GROUP BY month, acct
+)
 
-- PL: Uses the First-Party (IDXFP101) score for alerting.
-- TDCT: Uses only the IDX score for alerting.
-- MBNA: Uses all three scores, each with its respective cutoff threshold.
+SELECT
+    month,
 
-2. What is the purpose of each score, and how do they differ?
+    SUM(in_ais) AS ais_total,
 
-The primary difference lies in the training data and the fraud types each model is designed to identify:
+    SUM(in_account) AS account_total,
 
-- IDX: Trained on all fraud types to provide broader fraud detection coverage.
-- First-Party (FP): Trained specifically on first-party fraud cases.
-- Synthetic (SY): Trained specifically on synthetic identity fraud cases.
+    SUM(CASE
+        WHEN in_ais = 1 AND in_account = 1
+        THEN 1 ELSE 0
+    END) AS common_accounts,
 
-Our approach varies by portfolio based on the observed fraud patterns and model performance:
+    SUM(CASE
+        WHEN in_ais = 1 AND in_account = 0
+        THEN 1 ELSE 0
+    END) AS only_in_ais,
 
-- PL: Since first-party fraud is more prevalent in this portfolio, we currently use only IDXFP101 for alerting.
-- MBNA: Initially, we used only the IDX score. However, our analysis identified incremental detection benefits from the FP and SY scores, so we incorporated both into our alerting strategies.
-- TDCT: We currently use only IDX but plan to evaluate the FP and SY scores for potential future implementation, subject to demonstrated incremental benefits.
+    SUM(CASE
+        WHEN in_ais = 0 AND in_account = 1
+        THEN 1 ELSE 0
+    END) AS only_in_account
 
-3. Given the relatively low performance of IDXFP101, why is the model still considered useful?
-
-Although IDXFP101 may show lower overall performance, its value lies in its ability to identify first-party fraud patterns that may not be effectively captured by the broader IDX model.
-
-Its effectiveness is therefore assessed based on portfolio-specific fraud patterns and incremental detection benefits rather than overall model performance alone.
-
-Best regards,
-Yash
+FROM comparison
+GROUP BY month
+ORDER BY month;
