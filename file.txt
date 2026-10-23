@@ -1,25 +1,10 @@
-data = slim_pd.copy()
+import numpy as np
 
-for col in ["CONFIRMED_FRAUD", "SUSPECTED_FRAUD", "CUR_BAL_TOT"]:
-    data[col] = pd.to_numeric(data[col], errors="raise")
+matched = np.zeros(len(present), dtype=bool)
 
-data["confirmed_fraud_balance"] = data["CUR_BAL_TOT"].where(
-    data["CONFIRMED_FRAUD"].eq(1), 0
-)
+for combination in selected["facts"]:
+    facts = [fact.strip() for fact in combination.split(" + ")]
+    matched |= present[facts].all(axis=1).to_numpy()
 
-data["suspected_fraud_balance"] = data["CUR_BAL_TOT"].where(
-    data["SUSPECTED_FRAUD"].eq(1), 0
-)
-
-application_summary = (
-    data.groupby("APPLICATION_NUMBER", dropna=False)
-    .agg(
-        CONFIRMED_FRAUD=("CONFIRMED_FRAUD", "max"),
-        SUSPECTED_FRAUD=("SUSPECTED_FRAUD", "max"),
-        confirmed_fraud_balance=("confirmed_fraud_balance", "sum"),
-        suspected_fraud_balance=("suspected_fraud_balance", "sum"),
-    )
-    .reset_index()
-)
-
-display(application_summary)
+print("Rows checked:", len(matched))
+print("Rows matching combinations:", matched.sum())
