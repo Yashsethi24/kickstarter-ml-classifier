@@ -1,32 +1,29 @@
-Hi [HR Representative's Name],
+# Read credit limits from MBNA SLIM
+mbna_limits = spark.sql("""
+    SELECT ACCT_NUM_TA1, CR_LIM
+    FROM tsys.v_cfm_tsys_mbna_acct_slim
+    WHERE ACCT_NUM_TA1 IS NOT NULL
+""").toPandas()
 
-I hope you are doing well.
+# Align card numbers as strings, preserving leading zeros
+base["ACCT_NUM_TA1"] = (
+    base["ACCT_NUM_TA1"].astype("string").str.strip().replace("", pd.NA)
+)
+mbna_limits["ACCT_NUM_TA1"] = (
+    mbna_limits["ACCT_NUM_TA1"]
+    .astype("string").str.strip().replace("", pd.NA)
+)
 
-I am currently preparing my Canadian Permanent Residence application through Express Entry and would like to request your assistance in obtaining the following documents:
+# Remove identical key/limit pairs
+mbna_limits = (
+    mbna_limits.dropna(subset=["ACCT_NUM_TA1"])
+    .drop_duplicates(subset=["ACCT_NUM_TA1", "CR_LIM"])
+)
 
-1. Employment Verification Letter
-
-Could you please provide an employment verification letter on official TD letterhead confirming the following details?
-
-- Full legal name
-- Job title
-- Employment start date
-- Current employment status (permanent, full-time)
-- Regular working hours per week
-- Annual base salary and employment benefits
-- TD's official address and the issuing HR representative's contact details
-
-It would be helpful if the letter could be dated and signed by an authorized HR representative.
-
-2. Job Description on TD Letterhead
-
-I have attached a Word document containing the job description provided to me at the time of hiring.
-
-Could you please arrange to have this job description issued on official TD letterhead, preferably with an authorized signature, as supporting documentation for my Permanent Residence application?
-
-Please let me know if you require any additional information from my end or if there is a specific process I should follow to obtain these documents.
-
-Thank you for your time and assistance.
-
-Best regards,
-Yash Sethi
+# Add credit limit without multiplying base rows
+base = base.merge(
+    mbna_limits,
+    on="ACCT_NUM_TA1",
+    how="left",
+    validate="many_to_one"
+)
