@@ -1,29 +1,27 @@
-# Read credit limits from MBNA SLIM
-mbna_limits = spark.sql("""
-    SELECT ACCT_NUM_TA1, CR_LIM
-    FROM tsys.v_cfm_tsys_mbna_acct_slim
-    WHERE ACCT_NUM_TA1 IS NOT NULL
-""").toPandas()
+status_cols = ["SUSP_IND_BASE", "CNF_FRAUD_IND"]
+check_cols = status_cols + ["CR_LIM"]
 
-# Align card numbers as strings, preserving leading zeros
-base["ACCT_NUM_TA1"] = (
-    base["ACCT_NUM_TA1"].astype("string").str.strip().replace("", pd.NA)
-)
-mbna_limits["ACCT_NUM_TA1"] = (
-    mbna_limits["ACCT_NUM_TA1"]
-    .astype("string").str.strip().replace("", pd.NA)
-)
+conflicts = cards.groupby("CARD_NUMBER")[check_cols].nunique(dropna=False)
 
-# Remove identical key/limit pairs
-mbna_limits = (
-    mbna_limits.dropna(subset=["ACCT_NUM_TA1"])
-    .drop_duplicates(subset=["ACCT_NUM_TA1", "CR_LIM"])
-)
+if conflicts.gt(1).any(axis=None):
+    raise ValueError(
+        "Conflicting statuses or credit limits for a card at its latest OPEN_DT."
+    )
 
-# Add credit limit without multiplying base rows
-base = base.merge(
-    mbna_limits,
-    on="ACCT_NUM_TA1",
-    how="left",
-    validate="many_to_one"
+cards = cards[
+    ["CARD_NUMBER", "OPEN_DT", "CR_LIM"] + status_cols
+].drop_duplicates()
+
+cards["CR_LIM"] = pd.to_numeric(cards["CR_LIM"], errors="raise")
+
+F.col("CREDIT_LIMIT").cast("double").alias("CREDIT_LIMIT"),
+
+latest_window = Window.partitionBy("CARD_NUMBER")
+
+.join(limits, "CARD_NUMBER", "left")
+
+report["utilization_pct"] = (
+    report["total_approved_amount"]
+    .div(report["CR_LIM"].where(report["CR_LIM"] > 0))
+    .mul(100)
 )
