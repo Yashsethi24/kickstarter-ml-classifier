@@ -4,5 +4,10 @@
         F.col("MERCHANT_NAME").rlike(r"(?i)(amazon|amzn)")
         | (F.upper(F.trim(F.col("MERCHANT_NAME"))) == "BUSINESS PRIME"),
         F.lit("Amazon")
-    ).otherwise(F.col("MERCHANT_NAME"))
+    )
+    .when(
+        F.col("MERCHANT_NAME").rlike(r"(?i)wal[\s-]*mart"),
+        F.lit("Walmart")
+    )
+    .otherwise(F.col("MERCHANT_NAME"))
 )
