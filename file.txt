@@ -1,13 +1,26 @@
-.withColumn(
-    "MERCHANT_NAME",
-    F.when(
-        F.col("MERCHANT_NAME").rlike(r"(?i)(amazon|amzn)")
-        | (F.upper(F.trim(F.col("MERCHANT_NAME"))) == "BUSINESS PRIME"),
-        F.lit("Amazon")
+merchant_summary = (
+    transactions_df
+    .join(claim_months, on="CARD_NUMBER", how="inner")
+    .withColumn(
+        "MERCHANT_NAME",
+        F.coalesce(F.trim(F.col("MERCHANT_NAME")), F.lit("UNKNOWN"))
     )
-    .when(
-        F.col("MERCHANT_NAME").rlike(r"(?i)wal[\s-]*mart"),
-        F.lit("Walmart")
+    .withColumn(
+        "MERCHANT_NAME",
+        F.when(
+            F.col("MERCHANT_NAME").rlike(r"(?i)(amazon|amzn)")
+            | (F.upper(F.col("MERCHANT_NAME")) == "BUSINESS PRIME"),
+            F.lit("Amazon")
+        )
+        .when(
+            F.col("MERCHANT_NAME").rlike(r"(?i)wal[\s-]*mart"),
+            F.lit("Walmart")
+        )
+        .otherwise(F.col("MERCHANT_NAME"))
     )
-    .otherwise(F.col("MERCHANT_NAME"))
+    .groupBy("CLM_YM", "MERCHANT_NAME")
+    .agg(
+        F.count("*").alias("transaction_count"),
+        F.sum("AMOUNT_APPROVED").alias("total_amount_approved")
+    )
 )
