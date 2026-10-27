@@ -1,114 +1,167 @@
-import pandas as pd
-from pyspark.sql import functions as F
-
-# Standardize the three fraud sources.
-def prepare_tags(df, app_col, confirmed_col, suspected_col):
-    out = df[[app_col, confirmed_col, suspected_col]].copy()
-    out.columns = [
-        "Application_Number",
-        "CONFIRMED_FRAUD",
-        "SUSPECTED_FRAUD"
-    ]
-
-    out["Application_Number"] = (
-        out["Application_Number"].astype("string").str.strip()
-    )
-
-    for col in ["CONFIRMED_FRAUD", "SUSPECTED_FRAUD"]:
-        values = pd.to_numeric(
-            out[col].replace(r"^\s*$", pd.NA, regex=True),
-            errors="raise"
-        ).fillna(0)
-
-        if not values.isin([0, 1]).all():
-            raise ValueError(f"{col} contains values other than 0/1.")
-
-        out[col] = values.astype(int)
-
-    return out.loc[
-        out["Application_Number"].notna()
-        & out["Application_Number"].ne("")
-    ]
-
-
-tags = pd.concat(
-    [
-        prepare_tags(
-            df1,
-            "Application_Number",
-            "CONFIRMED_FRAUD",
-            "SUSPECTED_FRAUD"
-        ),
-        prepare_tags(
-            df2,
-            "APPLICATION_NUMBER",
-            "Final_App_Fraud_Tagged",
-            "Final_App_Fraud_Suspected_Tagged"
-        ),
-        prepare_tags(
-            df3,
-            "Application_Number",
-            "Final_App_Fraud_Tagged",
-            "Final_App_Fraud_Suspected_Tagged"
-        )
-    ],
-    ignore_index=True
-)
-
-# One row per application: flagged in any source = 1.
-# Aggregating before joining prevents duplicate fraud rows
-# from multiplying rows in the scores table.
-tags = tags.groupby("Application_Number", as_index=False)[
-    ["CONFIRMED_FRAUD", "SUSPECTED_FRAUD"]
-].max()
-
-fraud_tags = spark.createDataFrame(
-    [
-        (str(app), int(confirmed), int(suspected))
-        for app, confirmed, suspected
-        in tags.itertuples(index=False, name=None)
-    ],
-    schema="""
-        Application_Number STRING,
-        CONFIRMED_FRAUD INT,
-        SUSPECTED_FRAUD INT
-    """
-)
-
-scores = spark.table(
-    "hive_metastore.canada_adhoc.tu_idx_applications_w_scores"
-)
-
-result = (
-    scores.alias("s")
-    .join(
-        fraud_tags.alias("f"),
-        F.trim(F.col("s.Application_Number").cast("string"))
-        == F.col("f.Application_Number"),
-        "left"
-    )
-    .select(
-        "s.*",
-        F.coalesce(F.col("f.CONFIRMED_FRAUD"), F.lit(0))
-            .alias("CONFIRMED_FRAUD"),
-        F.coalesce(F.col("f.SUSPECTED_FRAUD"), F.lit(0))
-            .alias("SUSPECTED_FRAUD")
-    )
-)
-
-# Global temporary view, available throughout this Spark application.
-result.createOrReplaceGlobalTempView(
-    "tu_idx_applications_w_scores_fraud"
-)
-
-display(result)
-
-
-SELECT *
-FROM global_temp.tu_idx_applications_w_scores_fraud;
-
-
-
-result.write.format("delta").mode("errorifexists").saveAsTable(
-    "hive_metastore.canada_adhoc.tu_idx_applications_w_scores_fraud"
-)
+E610214520
+E610214550
+E610214557
+E610212318
+E610212450
+E610212260
+E610214210
+E610209856
+E610211848
+E610211287
+E610211475
+E610211965
+E610210918
+E610210889
+E610211044
+E610211533
+E610211790
+E610211989
+E610209047
+E610209744
+E610208057
+E610208810
+E610214372
+E610214332
+E610214598
+E610214233
+E610212398
+E610212085
+E610212094
+E610212154
+E610210145
+E610210500
+E610210306
+E610210282
+E610211321
+E610210033
+E610209905
+E610211367
+E610209918
+E610210284
+E610210851
+E610211900
+E610209956
+E610210114
+E610210292
+E610210239
+E610210931
+E610210515
+E610211108
+E610210971
+E610210172
+E610211084
+E610211071
+E610207895
+E610208110
+E610209569
+E610209605
+E610208212
+E610209544
+E610209145
+E610208522
+E610209474
+E610208558
+E610208014
+E610209383
+E610208398
+E610207993
+E610209635
+E610209549
+E610214502
+E610214337
+E610214628
+E610214317
+E610212375
+E610212428
+E610212062
+E610212070
+E610212045
+E610212310
+E610212412
+E610212334
+E610212367
+E610212467
+E610212101
+E610212352
+E610212097
+E610212332
+E610212350
+E610214157
+E610212087
+E610212475
+E610212387
+E610212300
+E610212089
+E610212470
+E610214169
+E610212117
+E610212041
+E610212327
+E610214140
+E610212361
+E610212325
+E610212057
+E610212451
+E610211766
+E610211596
+E610210726
+E610211842
+E610211829
+E610211924
+E610211572
+E610209772
+E610211161
+E610211312
+E610212029
+E610211391
+E610211307
+E610211816
+E610210065
+E610211485
+E610211688
+E610211341
+E610211793
+E610211598
+E610211564
+E610211724
+E610211871
+E610210644
+E610210006
+E610212027
+E610211477
+E610211844
+E610211857
+E610211732
+E610211369
+E610211763
+E610211846
+E610211834
+E610211804
+E610211649
+E610211731
+E610211807
+E610211776
+E610211785
+E610211921
+E610211740
+E610210344
+E610211523
+E610211377
+E610211507
+E610211756
+E610211825
+E610211374
+E610211304
+E610211487
+E610211786
+E610210806
+E610210551
+E610211814
+E610211754
+E610209591
+E610208886
+E610208914
+E610208861
+E610208902
+E610209634
+E610209503
