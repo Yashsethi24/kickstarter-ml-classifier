@@ -1,39 +1,94 @@
 %sql
-WITH bef_flags AS (
+WITH application_accounts AS (
+    -- Unique application/account links prevent repeated application
+    -- records from multiplying the card population.
+    SELECT DISTINCT
+        a.APPLICATION_NUMBER,
+        a.ACCOUNT_NUMBER
+    FROM hive_metastore.fiqm.applications a
+    INNER JOIN selected_application_ids i
+        ON a.APPLICATION_NUMBER = i.application_number
+),
+
+application_cards AS (
     SELECT
-        CARD_NUMBER,
+        a.APPLICATION_NUMBER,
+        s.*
+    FROM application_accounts a
+    INNER JOIN tsys.v_cfm_tsys_mbna_acct_slim s
+        ON TRIM(a.ACCOUNT_NUMBER) RLIKE '^[0-9]+$'
+       AND TRY_CAST(a.ACCOUNT_NUMBER AS DECIMAL(38, 0))
+           = TRY_CAST(s.APPLID AS DECIMAL(38, 0))
+),
+
+bef_flags AS (
+    SELECT
+        b.CARD_NUMBER,
         MAX(
-            CASE WHEN AMOUNT_APPROVED > 0 THEN 1 ELSE 0 END
+            CASE WHEN b.AMOUNT_APPROVED > 0
+                 THEN 1 ELSE 0 END
         ) AS monetary_transaction_flag,
         MAX(
             CASE
-                WHEN ACCT_STATUS1 LIKE 'PD%'
-                  OR ACCT_STATUS2 LIKE 'PD%'
-                  OR ACCT_STATUS3 LIKE 'PD%'
-                  OR ACCT_STATUS4 LIKE 'PD%'
+                WHEN b.ACCT_STATUS1 LIKE 'PD%'
+                  OR b.ACCT_STATUS2 LIKE 'PD%'
+                  OR b.ACCT_STATUS3 LIKE 'PD%'
+                  OR b.ACCT_STATUS4 LIKE 'PD%'
                 THEN 1 ELSE 0
             END
         ) AS delinquency_index
-    FROM tsys.v_cfm_tsys_mbna_bef
-    GROUP BY CARD_NUMBER
+    FROM tsys.v_cfm_tsys_mbna_bef b
+    LEFT SEMI JOIN application_cards c
+        ON b.CARD_NUMBER = c.ACCT_NUM
+    GROUP BY b.CARD_NUMBER
+),
+
+application_flags AS (
+    SELECT
+        c.APPLICATION_NUMBER,
+        COUNT(DISTINCT c.ACCT_NUM) AS card_count,
+        MAX(
+            CASE WHEN c.CRV_STAT_DT IS NOT NULL
+                 THEN 1 ELSE 0 END
+        ) AS activation_flag,
+        MAX(
+            CASE WHEN c.STF_ACTV_YR = 'Y'
+                 THEN 1 ELSE 0 END
+        ) AS activity_this_year_flag,
+        MAX(
+            CASE WHEN c.STC_CR_REVOKED IS NOT NULL
+                 THEN 1 ELSE 0 END
+        ) AS credit_revoked_flag,
+        MAX(
+            CASE WHEN c.STF_FRAUD IS NOT NULL
+                 THEN 1 ELSE 0 END
+        ) AS fraud_flag,
+        MAX(
+            CASE WHEN c.STATC_TIERED_AUTH LIKE 'L%'
+                 THEN 1 ELSE 0 END
+        ) AS block_flag,
+        MAX(COALESCE(b.monetary_transaction_flag, 0))
+            AS monetary_transaction_flag,
+        MAX(COALESCE(b.delinquency_index, 0))
+            AS delinquency_index
+    FROM application_cards c
+    LEFT JOIN bef_flags b
+        ON c.ACCT_NUM = b.CARD_NUMBER
+    GROUP BY c.APPLICATION_NUMBER
 )
+
 SELECT
-    s.ACCT_NUM AS card_number,
-    CASE WHEN s.CRV_STAT_DT IS NOT NULL
-         THEN 1 ELSE 0 END AS activation_flag,
-    CASE WHEN s.STF_ACTV_YR = 'Y'
-         THEN 1 ELSE 0 END AS activity_this_year_flag,
-    s.OPEN_DT,
-    CASE WHEN s.STC_CR_REVOKED IS NOT NULL
-         THEN 1 ELSE 0 END AS credit_revoked_flag,
-    CASE WHEN s.STF_FRAUD IS NOT NULL
-         THEN 1 ELSE 0 END AS fraud_flag,
-    CASE WHEN s.STATC_TIERED_AUTH LIKE 'L%'
-         THEN 1 ELSE 0 END AS block_flag,
-    COALESCE(b.monetary_transaction_flag, 0)
-        AS monetary_transaction_flag,
-    COALESCE(b.delinquency_index, 0)
-        AS delinquency_index
-FROM tsys.v_cfm_tsys_mbna_acct_slim s
-LEFT JOIN bef_flags b
-    ON s.ACCT_NUM = b.CARD_NUMBER;
+    i.application_number,
+    COALESCE(f.card_count, 0) AS card_count,
+    CASE WHEN f.APPLICATION_NUMBER IS NOT NULL
+         THEN 1 ELSE 0 END AS slim_match_flag,
+    f.activation_flag,
+    f.activity_this_year_flag,
+    f.credit_revoked_flag,
+    f.fraud_flag,
+    f.block_flag,
+    f.monetary_transaction_flag,
+    f.delinquency_index
+FROM selected_application_ids i
+LEFT JOIN application_flags f
+    ON i.application_number = f.APPLICATION_NUMBER;
