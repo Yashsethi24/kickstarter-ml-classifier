@@ -1,123 +1,236 @@
 import pandas as pd
-from pyspark.sql import functions as F
+from pyspark.sql import functions as F, Window
 
 # ------------------------------------------------------------
-# One record per card for the card and transaction reports.
-# Use latest OPEN_DT; stop if statuses or credit limits conflict.
+# 1. Select cards with utilization >= 80%.
+# report already contains one row per card and CR_LIM from SLIM.
 # ------------------------------------------------------------
-cards = base.dropna(subset=["CARD_NUMBER"]).copy()
+high_cards = report.loc[
+    report["utilization_pct"].ge(80) & report["CR_LIM"].gt(0),
+    ["CARD_NUMBER", "OPEN_DT", "CR_LIM", "utilization_pct"]
+].copy()
 
-cards["CR_LIM"] = pd.to_numeric(cards["CR_LIM"], errors="raise")
+high_cards["CARD_NUMBER"] = (
+    high_cards["CARD_NUMBER"].astype("string").str.strip()
+)
+high_cards["OPEN_DT"] = pd.to_datetime(
+    high_cards["OPEN_DT"], errors="raise"
+).dt.normalize()
 
-latest_run = cards.groupby("CARD_NUMBER")["OPEN_DT"].transform("max")
-cards = cards.loc[cards["OPEN_DT"].eq(latest_run)].copy()
+if high_cards["CARD_NUMBER"].duplicated().any():
+    raise ValueError("Expected one row per CARD_NUMBER in report.")
 
-status_cols = ["SUSP_IND_BASE", "CNF_FRAUD_IND"]
-check_cols = status_cols + ["CR_LIM"]
+if high_cards["OPEN_DT"].isna().any():
+    raise ValueError("Some selected cards have a missing OPEN_DT.")
 
-conflicts = (
-    cards.groupby("CARD_NUMBER")[check_cols]
-    .nunique(dropna=False)
+high_keys = spark.createDataFrame(
+    [
+        (str(card), opened.date(), float(limit))
+        for card, opened, limit in high_cards[
+            ["CARD_NUMBER", "OPEN_DT", "CR_LIM"]
+        ].itertuples(index=False, name=None)
+    ],
+    schema="CARD_NUMBER string, OPEN_DT date, CR_LIM double"
 )
 
-if conflicts.gt(1).any(axis=None):
-    raise ValueError(
-        "Conflicting statuses or credit limits for a card "
-        "at its latest OPEN_DT."
-    )
-
-cards = cards[
-    ["CARD_NUMBER", "OPEN_DT", "CR_LIM"] + status_cols
-].drop_duplicates()
-
-cards["blocked"] = cards["SUSP_IND_BASE"].eq(1)
-
-cards["unblocked"] = (
-    cards["SUSP_IND_BASE"].eq(0)
-    & cards["CNF_FRAUD_IND"].eq(0)
-)
-
-cards["confirmed_fraud"] = cards["CNF_FRAUD_IND"].eq(1)
-
 # ------------------------------------------------------------
-# Approved transactions, limited to cards in this report.
-# Credit limit comes from base.CR_LIM.
+# 2. Read all transaction types for these cards.
+# Do not apply AMOUNT_APPROVED > 0 here: payment records
+# may have a different amount sign or a missing amount.
 # ------------------------------------------------------------
-card_keys = spark.createDataFrame(
-    cards[["CARD_NUMBER", "OPEN_DT"]].assign(
-        OPEN_DT=lambda x: x["OPEN_DT"].dt.date
-    )
-)
-
-tx = (
+events = (
     spark.table("tsys.v_cfm_tsys_mbna_bef")
     .select(
-        F.trim(
-            F.col("CARD_NUMBER").cast("string")
-        ).alias("CARD_NUMBER"),
-        F.col("AMOUNT_APPROVED")
-        .cast("double")
+        F.trim(F.col("CARD_NUMBER").cast("string"))
+        .alias("CARD_NUMBER"),
+
+        F.trim(F.col("MESSAGE_TYPE").cast("string"))
+        .alias("MESSAGE_TYPE"),
+
+        F.col("AMOUNT_APPROVED").cast("double")
         .alias("AMOUNT_APPROVED"),
+
         F.to_timestamp("Auth_DateTime").alias("AUTH_TS")
     )
-    .filter(F.col("AMOUNT_APPROVED") > 0)
-    .join(card_keys, "CARD_NUMBER", "inner")
+    .join(high_keys, "CARD_NUMBER", "inner")
 )
 
-by_run = F.to_date("AUTH_TS") <= F.col("OPEN_DT")
-after_run = F.to_date("AUTH_TS") > F.col("OPEN_DT")
+# Keep dated events on or after card issuance.
+dated_events = events.filter(
+    F.col("AUTH_TS").isNotNull()
+    & (F.to_date("AUTH_TS") >= F.col("OPEN_DT"))
+)
 
-tx_summary = (
-    tx.groupBy("CARD_NUMBER")
-    .agg(
-        F.count("*").alias("transaction_count"),
+is_payment = F.col("MESSAGE_TYPE") == F.lit("0108")
 
-        F.sum("AMOUNT_APPROVED")
-        .alias("total_approved_amount"),
-
-        F.sum(
-            F.when(by_run, F.col("AMOUNT_APPROVED"))
-            .otherwise(0.0)
-        ).alias("approved_by_OPEN_DT"),
-
-        F.sum(
-            F.when(after_run, F.col("AMOUNT_APPROVED"))
-            .otherwise(0.0)
-        ).alias("approved_after_OPEN_DT"),
-
-        F.sum(
-            F.when(F.col("AUTH_TS").isNull(), 1)
-            .otherwise(0)
-        ).alias("transactions_missing_date")
+# ------------------------------------------------------------
+# 3. Cumulative spending by transaction timestamp.
+# Combine equal timestamps so threshold timing is unambiguous.
+# ------------------------------------------------------------
+spend_by_ts = (
+    dated_events
+    .filter(
+        (~is_payment)
+        & (F.col("AMOUNT_APPROVED") > 0)
     )
-    .toPandas()
+    .groupBy("CARD_NUMBER", "OPEN_DT", "CR_LIM", "AUTH_TS")
+    .agg(
+        F.sum("AMOUNT_APPROVED").alias("spend_at_timestamp")
+    )
+)
+
+spend_window = (
+    Window.partitionBy("CARD_NUMBER")
+    .orderBy("AUTH_TS")
+    .rowsBetween(Window.unboundedPreceding, Window.currentRow)
+)
+
+spend_timeline = spend_by_ts.withColumn(
+    "cumulative_spend",
+    F.sum("spend_at_timestamp").over(spend_window)
+)
+
+spend_timing = (
+    spend_timeline
+    .groupBy("CARD_NUMBER")
+    .agg(
+        F.min("AUTH_TS").alias("first_spend_ts"),
+        F.max("AUTH_TS").alias("last_spend_ts"),
+
+        F.sum("spend_at_timestamp")
+        .alias("total_spend_since_open"),
+
+        F.min(
+            F.when(
+                F.col("cumulative_spend") >= 0.80 * F.col("CR_LIM"),
+                F.col("AUTH_TS")
+            )
+        ).alias("reached_80pct_ts")
+    )
 )
 
 # ------------------------------------------------------------
-# Combine card details, SLIM credit limits, and transactions.
+# 4. Identify payment records since issuance.
 # ------------------------------------------------------------
-report = cards.merge(
-    tx_summary,
+payments = dated_events.filter(is_payment)
+
+payment_summary = (
+    payments.groupBy("CARD_NUMBER")
+    .agg(
+        F.count("*").alias("payment_record_count"),
+        F.min("AUTH_TS").alias("first_payment_ts"),
+        F.max("AUTH_TS").alias("last_payment_ts")
+    )
+)
+
+# Payments strictly after the card first reached 80%.
+payments_after_80 = (
+    payments
+    .join(
+        spend_timing.select("CARD_NUMBER", "reached_80pct_ts"),
+        "CARD_NUMBER",
+        "inner"
+    )
+    .filter(F.col("AUTH_TS") > F.col("reached_80pct_ts"))
+    .groupBy("CARD_NUMBER")
+    .agg(
+        F.count("*").alias("payment_records_after_80"),
+        F.min("AUTH_TS").alias("first_payment_after_80_ts")
+    )
+)
+
+# Surface records whose dates cannot be used.
+date_quality = (
+    events.groupBy("CARD_NUMBER")
+    .agg(
+        F.sum(
+            F.when(F.col("AUTH_TS").isNull(), 1).otherwise(0)
+        ).alias("records_missing_auth_ts")
+    )
+)
+
+# ------------------------------------------------------------
+# 5. One result row per selected card.
+# ------------------------------------------------------------
+timing_spark = (
+    high_keys
+    .join(spend_timing, "CARD_NUMBER", "left")
+    .join(payment_summary, "CARD_NUMBER", "left")
+    .join(payments_after_80, "CARD_NUMBER", "left")
+    .join(date_quality, "CARD_NUMBER", "left")
+    .fillna(
+        0,
+        subset=[
+            "payment_record_count",
+            "payment_records_after_80",
+            "records_missing_auth_ts"
+        ]
+    )
+    .withColumn(
+        "has_payment",
+        F.col("payment_record_count") > 0
+    )
+    .withColumn(
+        "has_payment_after_80",
+        F.col("payment_records_after_80") > 0
+    )
+    .withColumn(
+        "days_open_to_80pct",
+        F.datediff(F.to_date("reached_80pct_ts"), "OPEN_DT")
+    )
+    .withColumn(
+        "days_first_spend_to_80pct",
+        F.datediff(
+            F.to_date("reached_80pct_ts"),
+            F.to_date("first_spend_ts")
+        )
+    )
+    .withColumn(
+        "days_80pct_to_first_payment",
+        F.datediff(
+            F.to_date("first_payment_after_80_ts"),
+            F.to_date("reached_80pct_ts")
+        )
+    )
+    .withColumn(
+        "spend_pct_since_open",
+        100 * F.col("total_spend_since_open") / F.col("CR_LIM")
+    )
+)
+
+utilization_timing = timing_spark.toPandas()
+
+utilization_timing = utilization_timing.merge(
+    high_cards[["CARD_NUMBER", "utilization_pct"]],
     on="CARD_NUMBER",
     how="left",
     validate="one_to_one"
 )
 
-amount_count_cols = [
-    "transaction_count",
-    "total_approved_amount",
-    "approved_by_OPEN_DT",
-    "approved_after_OPEN_DT",
-    "transactions_missing_date"
-]
+# Group cards by how quickly they reached 80%.
+utilization_timing["time_to_80_band"] = pd.cut(
+    utilization_timing["days_open_to_80pct"],
+    bins=[0, 8, 15, 31, 61, 91, float("inf")],
+    labels=[
+        "0–7 days",
+        "8–14 days",
+        "15–30 days",
+        "31–60 days",
+        "61–90 days",
+        "91+ days"
+    ],
+    right=False
+).astype("string").fillna("80% not reached in dated spending")
 
-report[amount_count_cols] = report[amount_count_cols].fillna(0)
-
-# Missing or nonpositive credit limits produce missing utilization.
-report["utilization_pct"] = (
-    report["total_approved_amount"]
-    .div(report["CR_LIM"].where(report["CR_LIM"] > 0))
-    .mul(100)
+timing_summary = (
+    utilization_timing
+    .groupby("time_to_80_band", as_index=False, sort=False)
+    .agg(
+        cards=("CARD_NUMBER", "nunique"),
+        cards_with_payment=("has_payment", "sum"),
+        cards_with_payment_after_80=("has_payment_after_80", "sum")
+    )
 )
 
-display(report)
+display(utilization_timing)
+display(timing_summary)
