@@ -1,20 +1,114 @@
-application_numbers = (
-    apps["APPLICATION_NUMBER"]
-    .dropna()
-    .astype(str)
-    .str.strip()
+import pandas as pd
+from pyspark.sql import functions as F
+
+# Standardize the three fraud sources.
+def prepare_tags(df, app_col, confirmed_col, suspected_col):
+    out = df[[app_col, confirmed_col, suspected_col]].copy()
+    out.columns = [
+        "Application_Number",
+        "CONFIRMED_FRAUD",
+        "SUSPECTED_FRAUD"
+    ]
+
+    out["Application_Number"] = (
+        out["Application_Number"].astype("string").str.strip()
+    )
+
+    for col in ["CONFIRMED_FRAUD", "SUSPECTED_FRAUD"]:
+        values = pd.to_numeric(
+            out[col].replace(r"^\s*$", pd.NA, regex=True),
+            errors="raise"
+        ).fillna(0)
+
+        if not values.isin([0, 1]).all():
+            raise ValueError(f"{col} contains values other than 0/1.")
+
+        out[col] = values.astype(int)
+
+    return out.loc[
+        out["Application_Number"].notna()
+        & out["Application_Number"].ne("")
+    ]
+
+
+tags = pd.concat(
+    [
+        prepare_tags(
+            df1,
+            "Application_Number",
+            "CONFIRMED_FRAUD",
+            "SUSPECTED_FRAUD"
+        ),
+        prepare_tags(
+            df2,
+            "APPLICATION_NUMBER",
+            "Final_App_Fraud_Tagged",
+            "Final_App_Fraud_Suspected_Tagged"
+        ),
+        prepare_tags(
+            df3,
+            "Application_Number",
+            "Final_App_Fraud_Tagged",
+            "Final_App_Fraud_Suspected_Tagged"
+        )
+    ],
+    ignore_index=True
 )
-application_numbers = application_numbers[
-    application_numbers != ""
-].drop_duplicates()
 
-ids_df = spark.createDataFrame(
-    [(app_id,) for app_id in application_numbers],
-    schema="application_number STRING"
+# One row per application: flagged in any source = 1.
+# Aggregating before joining prevents duplicate fraud rows
+# from multiplying rows in the scores table.
+tags = tags.groupby("Application_Number", as_index=False)[
+    ["CONFIRMED_FRAUD", "SUSPECTED_FRAUD"]
+].max()
+
+fraud_tags = spark.createDataFrame(
+    [
+        (str(app), int(confirmed), int(suspected))
+        for app, confirmed, suspected
+        in tags.itertuples(index=False, name=None)
+    ],
+    schema="""
+        Application_Number STRING,
+        CONFIRMED_FRAUD INT,
+        SUSPECTED_FRAUD INT
+    """
 )
 
-ids_df.createOrReplaceTempView("selected_application_ids")
+scores = spark.table(
+    "hive_metastore.canada_adhoc.tu_idx_applications_w_scores"
+)
+
+result = (
+    scores.alias("s")
+    .join(
+        fraud_tags.alias("f"),
+        F.trim(F.col("s.Application_Number").cast("string"))
+        == F.col("f.Application_Number"),
+        "left"
+    )
+    .select(
+        "s.*",
+        F.coalesce(F.col("f.CONFIRMED_FRAUD"), F.lit(0))
+            .alias("CONFIRMED_FRAUD"),
+        F.coalesce(F.col("f.SUSPECTED_FRAUD"), F.lit(0))
+            .alias("SUSPECTED_FRAUD")
+    )
+)
+
+# Global temporary view, available throughout this Spark application.
+result.createOrReplaceGlobalTempView(
+    "tu_idx_applications_w_scores_fraud"
+)
+
+display(result)
 
 
-%sql
-SELECT * FROM selected_application_ids;
+SELECT *
+FROM global_temp.tu_idx_applications_w_scores_fraud;
+
+
+
+result.write.format("delta").mode("errorifexists").saveAsTable(
+    "hive_metastore.canada_adhoc.tu_idx_applications_w_scores_fraud"
+)
