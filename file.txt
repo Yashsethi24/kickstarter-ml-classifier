@@ -1,46 +1,20 @@
-CREATE OR REPLACE TEMP VIEW selected_application_indexes AS
+application_numbers = (
+    apps["APPLICATION_NUMBER"]
+    .dropna()
+    .astype(str)
+    .str.strip()
+)
+application_numbers = application_numbers[
+    application_numbers != ""
+].drop_duplicates()
 
-%sql
-WITH application_dates AS (
-    SELECT
-        a.APPLICATION_NUMBER,
-        MIN(a.APPLICATION_DATE) AS application_date
-    FROM hive_metastore.fiqm.applications a
-    INNER JOIN selected_application_ids i
-        ON a.APPLICATION_NUMBER = i.application_number
-    GROUP BY a.APPLICATION_NUMBER
-),
-
-monthly_base AS (
-    SELECT
-        f.*,
-        CAST(DATE_TRUNC('MONTH', d.application_date) AS DATE)
-            AS application_month
-    FROM selected_application_indexes f
-    LEFT JOIN application_dates d
-        ON f.application_number = d.APPLICATION_NUMBER
+ids_df = spark.createDataFrame(
+    [(app_id,) for app_id in application_numbers],
+    schema="application_number STRING"
 )
 
-SELECT
-    application_month,
-    COUNT(*) AS application_count,
-    SUM(slim_match_flag) AS applications_with_slim_match,
-    SUM(CASE WHEN slim_match_flag = 0 THEN 1 ELSE 0 END)
-        AS applications_without_slim_match,
-    SUM(COALESCE(activation_flag, 0))
-        AS activated_applications,
-    SUM(COALESCE(activity_this_year_flag, 0))
-        AS applications_active_this_year,
-    SUM(COALESCE(credit_revoked_flag, 0))
-        AS credit_revoked_applications,
-    SUM(COALESCE(fraud_flag, 0))
-        AS fraud_marked_applications,
-    SUM(COALESCE(block_flag, 0))
-        AS blocked_applications,
-    SUM(COALESCE(monetary_transaction_flag, 0))
-        AS applications_with_monetary_transaction,
-    SUM(COALESCE(delinquency_index, 0))
-        AS delinquent_applications
-FROM monthly_base
-GROUP BY application_month
-ORDER BY application_month;
+ids_df.createOrReplaceTempView("selected_application_ids")
+
+
+%sql
+SELECT * FROM selected_application_ids;
