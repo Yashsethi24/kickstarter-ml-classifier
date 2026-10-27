@@ -1,13 +1,94 @@
-overall_summary = (
-    ever_over_80
-    .filter(F.col("AUTH_month") != "2026-10")
-    .agg(
-        F.count("*").alias("unique_cards_ever_over_80"),
-        F.count(
-            F.when(F.col("has_later_payment") == 1, 1)
-        ).alias("with_later_payment"),
-        F.count(
-            F.when(F.col("has_later_payment") == 0, 1)
-        ).alias("without_observed_later_payment")
-    )
+import pandas as pd
+import numpy as np
+
+df = claims_df.copy()
+
+# Change the year if needed.
+year = 2026
+months = pd.period_range(f"{year}-07", f"{year}-10", freq="M")
+
+for col in ["OPEN_DT", "CLM_DT"]:
+    df[col] = pd.to_datetime(df[col], errors="coerce").dt.normalize()
+
+df["tot_loss"] = pd.to_numeric(df["tot_loss"], errors="coerce")
+
+# Filter using claim date.
+df = df.loc[
+    df["CLM_DT"].ge(pd.Timestamp(year, 7, 1))
+    & df["CLM_DT"].lt(pd.Timestamp(year, 11, 1))
+].copy()
+
+df["claim_month"] = df["CLM_DT"].dt.to_period("M")
+
+# Calendar-month anniversaries of card opening.
+one_month = df["OPEN_DT"] + pd.DateOffset(months=1)
+three_months = df["OPEN_DT"] + pd.DateOffset(months=3)
+
+valid_age = (
+    df["OPEN_DT"].notna()
+    & df["CLM_DT"].ge(df["OPEN_DT"])
 )
+
+df["card_age"] = np.select(
+    [
+        valid_age & df["CLM_DT"].lt(one_month),
+        valid_age & df["CLM_DT"].ge(one_month)
+                  & df["CLM_DT"].le(three_months),
+        valid_age & df["CLM_DT"].gt(three_months),
+    ],
+    ["<1 month", "1–3 months", ">3 months"],
+    default="Unknown / invalid",
+)
+
+# 1. Loss distribution by claim month and card age.
+age_columns = [
+    "<1 month", "1–3 months", ">3 months", "Unknown / invalid"
+]
+
+loss_distribution = (
+    df.groupby(["claim_month", "card_age"])["tot_loss"]
+      .sum(min_count=1)
+      .unstack("card_age")
+      .reindex(index=months, columns=age_columns)
+      .fillna(0)
+)
+
+loss_distribution["Total loss"] = loss_distribution.sum(axis=1)
+
+# 2. Distinct application counts by claim month.
+# An application is counted once per month for each indicator
+# if any of its rows has that indicator equal to 1.
+application_summary = (
+    df.groupby("claim_month")["Application_Number"]
+      .nunique()
+      .reindex(months, fill_value=0)
+      .to_frame("Applications")
+)
+
+flag_columns = {
+    "priority_alert_ind": "Priority alert applications",
+    "autoblock_alert_ind": "Auto block applications",
+    "add_mismatch_ind": "Address mismatch applications",
+}
+
+for flag, output_column in flag_columns.items():
+    flagged = pd.to_numeric(df[flag], errors="coerce").eq(1)
+
+    application_summary[output_column] = (
+        df.loc[flagged]
+          .groupby("claim_month")["Application_Number"]
+          .nunique()
+          .reindex(months, fill_value=0)
+    )
+
+# Make claim month the leftmost column.
+for result in [loss_distribution, application_summary]:
+    result.index = result.index.strftime("%Y-%m")
+    result.index.name = "Claim month"
+    result.columns.name = None
+
+loss_distribution = loss_distribution.reset_index()
+application_summary = application_summary.reset_index()
+
+display(loss_distribution)
+display(application_summary)
