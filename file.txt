@@ -1,298 +1,39 @@
-import pandas as pd
-from pyspark.sql import functions as F
-
-# ------------------------------------------------------------
-# 1. Card population: SLIM credit limit and card issuance date
-# ------------------------------------------------------------
-card_population = cards[
-    ["CARD_NUMBER", "OPEN_DT", "CR_LIM"]
-].copy()
-
-card_population["CARD_NUMBER"] = (
-    card_population["CARD_NUMBER"].astype("string").str.strip()
+%sql
+WITH bef_flags AS (
+    SELECT
+        CARD_NUMBER,
+        MAX(
+            CASE WHEN AMOUNT_APPROVED > 0 THEN 1 ELSE 0 END
+        ) AS monetary_transaction_flag,
+        MAX(
+            CASE
+                WHEN ACCT_STATUS1 LIKE 'PD%'
+                  OR ACCT_STATUS2 LIKE 'PD%'
+                  OR ACCT_STATUS3 LIKE 'PD%'
+                  OR ACCT_STATUS4 LIKE 'PD%'
+                THEN 1 ELSE 0
+            END
+        ) AS delinquency_index
+    FROM tsys.v_cfm_tsys_mbna_bef
+    GROUP BY CARD_NUMBER
 )
-card_population["OPEN_DT"] = pd.to_datetime(
-    card_population["OPEN_DT"], errors="raise"
-).dt.normalize()
-card_population["CR_LIM"] = pd.to_numeric(
-    card_population["CR_LIM"], errors="raise"
-)
-
-if card_population["CARD_NUMBER"].duplicated().any():
-    raise ValueError("Expected one row per card.")
-
-if card_population[["CARD_NUMBER", "OPEN_DT"]].isna().any().any():
-    raise ValueError("Card number and OPEN_DT must be populated.")
-
-card_info = spark.createDataFrame(
-    [
-        (
-            str(card),
-            opened.date(),
-            None if pd.isna(limit) else float(limit)
-        )
-        for card, opened, limit in card_population.itertuples(
-            index=False, name=None
-        )
-    ],
-    "CARD_NUMBER string, OPEN_DT date, CR_LIM double"
-)
-
-# ------------------------------------------------------------
-# 2. Read events, including payments
-# AUTH_DATE: yyyyMMdd
-# REQUEST_TIME: HHmmss, with leading zeros restored
-# ------------------------------------------------------------
-events = (
-    spark.table("tsys.v_cfm_tsys_mbna_bef")
-    .select(
-        F.trim(F.col("CARD_NUMBER").cast("string"))
-        .alias("CARD_NUMBER"),
-
-        F.trim(F.col("AUTH_DATE").cast("string"))
-        .alias("auth_date_text"),
-
-        F.lpad(
-            F.trim(F.col("REQUEST_TIME").cast("string")),
-            6,
-            "0"
-        ).alias("request_time_text"),
-
-        F.upper(F.trim(F.col("MERCHANT_NAME")))
-        .alias("merchant_name"),
-
-        F.col("PRIOR_AVAILABLE_MONEY").cast("double")
-        .alias("PRIOR_AVAILABLE_MONEY"),
-
-        # Used to exclude zero-filled nonfinancial records.
-        F.col("CREDIT_LIMIT").cast("double")
-        .alias("event_credit_limit")
-    )
-    .join(card_info, "CARD_NUMBER", "inner")
-    .withColumn(
-        "AUTH_TS",
-        F.expr("""
-            try_to_timestamp(
-                concat(auth_date_text, request_time_text),
-                'yyyyMMddHHmmss'
-            )
-        """)
-    )
-    .withColumn(
-        "is_payment",
-        F.coalesce(F.col("merchant_name") == "PAYMENT", F.lit(False))
-    )
-)
-
-# Review records that cannot be placed in chronological order.
-date_quality = events.agg(
-    F.count("*").alias("event_records"),
-    F.sum(
-        F.when(F.col("AUTH_TS").isNull(), 1).otherwise(0)
-    ).alias("records_with_invalid_date_or_time")
-)
-
-events = (
-    events
-    .filter(
-        F.col("AUTH_TS").isNotNull()
-        & (F.to_date("AUTH_TS") >= F.col("OPEN_DT"))
-    )
-    .withColumn("auth_month", F.date_format("AUTH_TS", "yyyy-MM"))
-)
-
-# ------------------------------------------------------------
-# 3. Calculate observed utilization using available money
-# Denominator remains SLIM CR_LIM.
-# Payment and zero-filled records do not supply utilization.
-# ------------------------------------------------------------
-valid_utilization = (
-    (~F.col("is_payment"))
-    & (F.col("CR_LIM") > 0)
-    & (F.col("event_credit_limit") > 0)
-    & F.col("PRIOR_AVAILABLE_MONEY").isNotNull()
-)
-
-events = events.withColumn(
-    "observed_utilization_pct",
-    F.when(
-        valid_utilization,
-        100.0 * (
-            F.col("CR_LIM") - F.col("PRIOR_AVAILABLE_MONEY")
-        ) / F.col("CR_LIM")
-    )
-)
-
-# ------------------------------------------------------------
-# 4. Monthly utilization and payments
-# Strictly greater than 80%, rather than >= 80%.
-# ------------------------------------------------------------
-monthly = (
-    events.groupBy("CARD_NUMBER", "OPEN_DT", "CR_LIM", "auth_month")
-    .agg(
-        F.count("observed_utilization_pct")
-        .alias("valid_utilization_records"),
-
-        F.max("observed_utilization_pct")
-        .alias("peak_utilization_pct"),
-
-        F.min(
-            F.when(
-                F.col("observed_utilization_pct") > 80,
-                F.col("AUTH_TS")
-            )
-        ).alias("first_over_80_ts"),
-
-        F.sum(
-            F.when(F.col("is_payment"), 1).otherwise(0)
-        ).alias("payment_records_in_month"),
-
-        F.min(
-            F.when(F.col("is_payment"), F.col("AUTH_TS"))
-        ).alias("first_payment_in_month_ts")
-    )
-    .withColumn(
-        "exceeded_80",
-        F.col("peak_utilization_pct") > 80
-    )
-)
-
-# ------------------------------------------------------------
-# 5. For each qualifying card-month, find the first later payment
-# Search all subsequent observed months as well.
-# ------------------------------------------------------------
-thresholds = (
-    monthly
-    .filter(F.col("exceeded_80"))
-    .select("CARD_NUMBER", "auth_month", "first_over_80_ts")
-)
-
-payments = (
-    events.filter(F.col("is_payment"))
-    .select(
-        F.col("CARD_NUMBER").alias("payment_card"),
-        F.col("AUTH_TS").alias("payment_ts")
-    )
-)
-
-payment_followup = (
-    thresholds.alias("t")
-    .join(
-        payments.alias("p"),
-        (F.col("t.CARD_NUMBER") == F.col("p.payment_card"))
-        & (F.col("p.payment_ts") > F.col("t.first_over_80_ts")),
-        "left"
-    )
-    .groupBy(
-        F.col("t.CARD_NUMBER").alias("CARD_NUMBER"),
-        F.col("t.auth_month").alias("auth_month")
-    )
-    .agg(
-        F.min("p.payment_ts").alias("first_payment_after_80_ts")
-    )
-)
-
-monthly_detail = (
-    monthly
-    .join(payment_followup, ["CARD_NUMBER", "auth_month"], "left")
-    .withColumn(
-        "has_payment_in_month",
-        F.col("payment_records_in_month") > 0
-    )
-    .withColumn(
-        "has_payment_after_80",
-        F.col("first_payment_after_80_ts").isNotNull()
-    )
-    .withColumn(
-        "payment_after_80_same_month",
-        F.coalesce(
-            F.date_format("first_payment_after_80_ts", "yyyy-MM")
-            == F.col("auth_month"),
-            F.lit(False)
-        )
-    )
-    .withColumn(
-        "days_open_to_over_80",
-        F.datediff(F.to_date("first_over_80_ts"), "OPEN_DT")
-    )
-    .withColumn(
-        "days_to_payment_after_80",
-        F.datediff(
-            F.to_date("first_payment_after_80_ts"),
-            F.to_date("first_over_80_ts")
-        )
-    )
-)
-
-# ------------------------------------------------------------
-# 6. Monthly counts
-# Unknown utilization remains separate from <= 80%.
-# ------------------------------------------------------------
-monthly_summary = (
-    monthly_detail.groupBy("auth_month")
-    .agg(
-        F.count("*").alias("cards_with_events"),
-
-        F.sum(
-            F.when(F.col("valid_utilization_records") > 0, 1)
-            .otherwise(0)
-        ).alias("cards_with_valid_utilization"),
-
-        F.sum(
-            F.when(F.col("exceeded_80"), 1).otherwise(0)
-        ).alias("cards_over_80"),
-
-        F.sum(
-            F.when(
-                F.col("exceeded_80") & F.col("has_payment_in_month"), 1
-            ).otherwise(0)
-        ).alias("over_80_with_payment_in_month"),
-
-        F.sum(
-            F.when(
-                F.col("exceeded_80")
-                & F.col("payment_after_80_same_month"), 1
-            ).otherwise(0)
-        ).alias("over_80_with_later_payment_same_month"),
-
-        F.sum(
-            F.when(
-                F.col("exceeded_80") & F.col("has_payment_after_80"), 1
-            ).otherwise(0)
-        ).alias("over_80_with_later_payment_any_month")
-    )
-    .orderBy("auth_month")
-)
-
-# Unique cards across all months: each card counted once.
-ever_over_80 = (
-    monthly_detail
-    .filter(F.col("exceeded_80"))
-    .groupBy("CARD_NUMBER")
-    .agg(
-        F.min("first_over_80_ts").alias("first_over_80_ts"),
-        F.max("peak_utilization_pct").alias("peak_utilization_pct"),
-        F.max(F.col("has_payment_after_80").cast("int"))
-        .alias("has_later_payment")
-    )
-)
-
-overall_summary = ever_over_80.agg(
-    F.count("*").alias("unique_cards_ever_over_80"),
-    F.count(
-        F.when(F.col("has_later_payment") == 1, 1)
-    ).alias("with_later_payment"),
-    F.count(
-        F.when(F.col("has_later_payment") == 0, 1)
-    ).alias("without_observed_later_payment")
-)
-
-display(date_quality)
-display(monthly_summary)
-display(overall_summary)
-
-display(
-    monthly_detail
-    .filter(F.col("exceeded_80"))
-    .orderBy("CARD_NUMBER", "auth_month")
-)
+SELECT
+    s.ACCT_NUM AS card_number,
+    CASE WHEN s.CRV_STAT_DT IS NOT NULL
+         THEN 1 ELSE 0 END AS activation_flag,
+    CASE WHEN s.STF_ACTV_YR = 'Y'
+         THEN 1 ELSE 0 END AS activity_this_year_flag,
+    s.OPEN_DT,
+    CASE WHEN s.STC_CR_REVOKED IS NOT NULL
+         THEN 1 ELSE 0 END AS credit_revoked_flag,
+    CASE WHEN s.STF_FRAUD IS NOT NULL
+         THEN 1 ELSE 0 END AS fraud_flag,
+    CASE WHEN s.STATC_TIERED_AUTH LIKE 'L%'
+         THEN 1 ELSE 0 END AS block_flag,
+    COALESCE(b.monetary_transaction_flag, 0)
+        AS monetary_transaction_flag,
+    COALESCE(b.delinquency_index, 0)
+        AS delinquency_index
+FROM tsys.v_cfm_tsys_mbna_acct_slim s
+LEFT JOIN bef_flags b
+    ON s.ACCT_NUM = b.CARD_NUMBER;
