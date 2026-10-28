@@ -1,22 +1,44 @@
-timing_order = [
-    "0–48 hours",
-    ">48 hours–30 days",
-    ">30 days",
+APP = "Application_Number"
+
+strategy_cols = [
+    "priority_alert_ind",
+    "om5_alert_ind",
+    "add_mismatch_ind",
 ]
 
-card_distribution = (
-    claims_df.loc[claims_df["TRANS_TIMING"].isin(timing_order)]
-    .groupby(["CLAIM_YM", "TRANS_TIMING"])[CARD]
-    .nunique()
-    .unstack(fill_value=0)
-    .reindex(columns=timing_order, fill_value=0)
-    .rename(columns={
-        "0–48 hours": "cards_0_to_48_hours",
-        ">48 hours–30 days": "cards_after_48_hours_to_30_days",
-        ">30 days": "cards_after_30_days",
-    })
-    .sort_index()
-    .reset_index()
+# Handles flags stored as either numeric 1 or string "1".
+claims_df["ANY_STRATEGY_ALERTED"] = (
+    claims_df[strategy_cols]
+    .apply(pd.to_numeric, errors="coerce")
+    .eq(1)
+    .any(axis=1)
+    .astype(int)
 )
 
-display(card_distribution)
+# Collapse repeated transaction/card rows to application level.
+application_level = (
+    claims_df.groupby(["CLAIM_YM", APP], as_index=False)
+    .agg(ANY_STRATEGY_ALERTED=("ANY_STRATEGY_ALERTED", "max"))
+)
+
+# Final monthly view.
+application_distribution = (
+    application_level.groupby("CLAIM_YM", as_index=False)
+    .agg(
+        unique_applications=(APP, "nunique"),
+        alerted_applications=("ANY_STRATEGY_ALERTED", "sum"),
+    )
+)
+
+application_distribution["not_alerted_applications"] = (
+    application_distribution["unique_applications"]
+    - application_distribution["alerted_applications"]
+)
+
+application_distribution["alerted_pct"] = (
+    application_distribution["alerted_applications"]
+    / application_distribution["unique_applications"]
+    * 100
+).round(2)
+
+display(application_distribution)
