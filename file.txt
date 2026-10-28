@@ -1,18 +1,14 @@
-seen = {}
-new_columns = []
-
-for col in claims_df.columns:
-    seen[col] = seen.get(col, 0) + 1
-    new_columns.append(
-        col if seen[col] == 1 else f"{col}__{seen[col]}"
-    )
-
-claims_df.columns = new_columns
-
-# Compare the two account identifiers.
-display(
-    claims_df[
-        ["ACCOUNTNUMBER", "ACCOUNTNUMBER__2"]
-    ].head(10)
+# Month based on claim date, not transaction date.
+claims_df["CLAIM_YEAR_MONTH"] = (
+    claims_df["FST_CLM_DT"].dt.strftime("%Y-%m")
 )
 
+same_month_claims_distribution = (
+    claims_df.loc[claims_df["CLAIM_TIMING"].eq("Same Month")]
+    .groupby("CLAIM_YEAR_MONTH")
+    .agg(number_of_claims=("PYID", "nunique"))
+    .reset_index()
+    .sort_values("CLAIM_YEAR_MONTH")
+)
+
+display(same_month_claims_distribution)
