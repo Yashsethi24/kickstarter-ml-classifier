@@ -1,37 +1,9 @@
-mask = claims_df["TRANS_HOURS_FROM_OPEN"].gt(48)
-
-merchant_distribution = (
-    claims_df.loc[mask]
-    .assign(
-        MERCHANT=lambda x: x[MERCHANT].replace("", pd.NA)
+.assign(
+    MERCHANT=lambda x: (
+        x["MERCHANT"]
+        .str.replace(r"[#0-9]+", "", regex=True)
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+        .replace("", pd.NA)
     )
-    .assign(
-        MERCHANT=lambda x: x["MERCHANT"].mask(
-            x["MERCHANT"].str.contains(
-                r"amazon|amzn|^BUSINESS PRIME$",
-                case=False,
-                na=False,
-            ),
-            "Amazon",
-        )
-    )
-    .assign(
-        MERCHANT=lambda x: x["MERCHANT"].mask(
-            x["MERCHANT"].str.contains(
-                r"wal[\s-]*mart",
-                case=False,
-                na=False,
-            ),
-            "Walmart",
-        )
-    )
-    .groupby(["CLAIM_YM", "CLAIM_TIMING", "MERCHANT"], dropna=False)
-    .agg(
-        transaction_rows=(TXN, "size"),
-        unique_cards=(CARD, "nunique"),
-    )
-    .sort_values("transaction_rows", ascending=False)
-    .reset_index()
 )
-
-display(merchant_distribution)
