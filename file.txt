@@ -1,44 +1,22 @@
-APP = "Application_Number"
+# POS values "10" and "81" indicate card not present.
+claims_df["CARD_PRESENCE"] = "Card Present"
 
-strategy_cols = [
-    "priority_alert_ind",
-    "om5_alert_ind",
-    "add_mismatch_ind",
-]
+claims_df.loc[
+    claims_df["POS"].astype("string").str.strip().isin(["10", "81"]),
+    "CARD_PRESENCE"
+] = "Card Not Present"
 
-# Handles flags stored as either numeric 1 or string "1".
-claims_df["ANY_STRATEGY_ALERTED"] = (
-    claims_df[strategy_cols]
-    .apply(pd.to_numeric, errors="coerce")
-    .eq(1)
-    .any(axis=1)
-    .astype(int)
+card_presence_summary = (
+    claims_df.groupby(["CLAIM_YM", "CARD_PRESENCE"])[CARD]
+    .nunique()
+    .unstack(fill_value=0)
+    .reindex(columns=["Card Present", "Card Not Present"], fill_value=0)
+    .rename(columns={
+        "Card Present": "card_present_cards",
+        "Card Not Present": "card_not_present_cards",
+    })
+    .sort_index()
+    .reset_index()
 )
 
-# Collapse repeated transaction/card rows to application level.
-application_level = (
-    claims_df.groupby(["CLAIM_YM", APP], as_index=False)
-    .agg(ANY_STRATEGY_ALERTED=("ANY_STRATEGY_ALERTED", "max"))
-)
-
-# Final monthly view.
-application_distribution = (
-    application_level.groupby("CLAIM_YM", as_index=False)
-    .agg(
-        unique_applications=(APP, "nunique"),
-        alerted_applications=("ANY_STRATEGY_ALERTED", "sum"),
-    )
-)
-
-application_distribution["not_alerted_applications"] = (
-    application_distribution["unique_applications"]
-    - application_distribution["alerted_applications"]
-)
-
-application_distribution["alerted_pct"] = (
-    application_distribution["alerted_applications"]
-    / application_distribution["unique_applications"]
-    * 100
-).round(2)
-
-display(application_distribution)
+display(card_presence_summary)
