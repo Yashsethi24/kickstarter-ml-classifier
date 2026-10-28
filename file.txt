@@ -1,22 +1,31 @@
-# POS values "10" and "81" indicate card not present.
-claims_df["CARD_PRESENCE"] = "Card Present"
-
-claims_df.loc[
-    claims_df["POS"].astype("string").str.strip().isin(["10", "81"]),
-    "CARD_PRESENCE"
-] = "Card Not Present"
-
-card_presence_summary = (
-    claims_df.groupby(["CLAIM_YM", "CARD_PRESENCE"])[CARD]
-    .nunique()
-    .unstack(fill_value=0)
-    .reindex(columns=["Card Present", "Card Not Present"], fill_value=0)
-    .rename(columns={
-        "Card Present": "card_present_cards",
-        "Card Not Present": "card_not_present_cards",
-    })
-    .sort_index()
-    .reset_index()
+# Completed days between opening and the first transaction.
+claims_df["FIRST_TRANS_DAYS_FROM_OPEN"] = (
+    claims_df["FIRST_TRANS_HOURS_FROM_OPEN"] // 24
 )
 
-display(card_presence_summary)
+day_labels = [
+    "0–1 days",
+    "2–3 days",
+    "4–10 days",
+    "11–30 days",
+    ">30 days",
+]
+
+claims_df["FIRST_TRANS_DAY_BUCKET"] = pd.cut(
+    claims_df["FIRST_TRANS_DAYS_FROM_OPEN"],
+    bins=[-1, 1, 3, 10, 30, float("inf")],
+    labels=day_labels,
+)
+
+first_transaction_distribution = (
+    claims_df.groupby(
+        ["FIRST_TRANS_DAY_BUCKET", "CLAIM_YM"],
+        observed=True,
+    )[CARD]
+    .nunique()
+    .unstack(fill_value=0)
+    .reindex(day_labels, fill_value=0)
+    .sort_index(axis=1)
+)
+
+display(first_transaction_distribution)
