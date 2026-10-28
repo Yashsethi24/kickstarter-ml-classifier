@@ -1,99 +1,18 @@
-import pandas as pd
+seen = {}
+new_columns = []
 
-CARD = "ACCOUNTNUMBER"
-OPEN = "OPEN_DT"
-CLAIM = "FST_CLM_DT"
-TXN = "TRANS_DT"
-MERCHANT = "TRANSACTIONDETAIL"
-
-# Parse dates; invalid values become NaT.
-for col in [OPEN, CLAIM, TXN]:
-    claims_df[col] = pd.to_datetime(
-        claims_df[col], errors="coerce", utc=True
+for col in claims_df.columns:
+    seen[col] = seen.get(col, 0) + 1
+    new_columns.append(
+        col if seen[col] == 1 else f"{col}__{seen[col]}"
     )
 
-# Per-card opening dates and first transaction, retained on every row.
-card_group = claims_df.groupby(CARD)
+claims_df.columns = new_columns
 
-claims_df["MIN_OPEN_DT"] = card_group[OPEN].transform("min")
-claims_df["MAX_OPEN_DT"] = card_group[OPEN].transform("max")
-claims_df["FIRST_TRANS_DT"] = card_group[TXN].transform("min")
-
-# Use minimum opening date as the reference.
-claims_df["CLAIM_DAYS_FROM_OPEN"] = (
-    claims_df[CLAIM] - claims_df["MIN_OPEN_DT"]
-).dt.total_seconds() / 86400
-
-claims_df["CLAIM_TIMING"] = "Missing dates"
-
-days = claims_df["CLAIM_DAYS_FROM_OPEN"]
-claims_df.loc[days < 0, "CLAIM_TIMING"] = "Before opening"
-claims_df.loc[(days >= 0) & (days < 30), "CLAIM_TIMING"] = "Same Month"
-claims_df.loc[days >= 30, "CLAIM_TIMING"] = "Later"
-
-# Earliest/latest transaction for claims classified as Same Month.
-same_month = claims_df["CLAIM_TIMING"].eq("Same Month")
-eligible_txn = claims_df[TXN].where(same_month)
-
-claims_df["SAME_MONTH_FIRST_TRANS_DT"] = (
-    eligible_txn.groupby(claims_df[CARD]).transform("min")
-)
-claims_df["SAME_MONTH_LAST_TRANS_DT"] = (
-    eligible_txn.groupby(claims_df[CARD]).transform("max")
+# Compare the two account identifiers.
+display(
+    claims_df[
+        ["ACCOUNTNUMBER", "ACCOUNTNUMBER__2"]
+    ].head(10)
 )
 
-# Time from opening to the card's first observed transaction.
-claims_df["FIRST_TRANS_HOURS_FROM_OPEN"] = (
-    claims_df["FIRST_TRANS_DT"] - claims_df["MIN_OPEN_DT"]
-).dt.total_seconds() / 3600
-
-# Time from opening to EACH transaction.
-claims_df["TRANS_HOURS_FROM_OPEN"] = (
-    claims_df[TXN] - claims_df["MIN_OPEN_DT"]
-).dt.total_seconds() / 3600
-
-hours = claims_df["TRANS_HOURS_FROM_OPEN"]
-claims_df["TRANS_TIMING"] = "Missing dates"
-
-claims_df.loc[hours < 0, "TRANS_TIMING"] = "Before opening"
-claims_df.loc[
-    (hours >= 0) & (hours <= 48), "TRANS_TIMING"
-] = "0–48 hours"
-claims_df.loc[
-    (hours > 48) & (hours <= 30 * 24), "TRANS_TIMING"
-] = ">48 hours–30 days"
-claims_df.loc[
-    hours > 30 * 24, "TRANS_TIMING"
-] = ">30 days"
-
-# Sort transactions within each card.
-claims_df.sort_values(
-    [CARD, TXN], na_position="last", inplace=True
-)
-
-mask = (
-    claims_df["CLAIM_TIMING"].eq("Same Month")
-    & claims_df["TRANS_HOURS_FROM_OPEN"].gt(48)
-)
-
-merchant_distribution = (
-    claims_df.loc[mask]
-    .assign(
-        MERCHANT=lambda x: x[MERCHANT].replace("", pd.NA)
-    )
-    .groupby("MERCHANT", dropna=False)
-    .agg(
-        transaction_rows=(TXN, "size"),
-        unique_cards=(CARD, "nunique"),
-    )
-    .sort_values("transaction_rows", ascending=False)
-    .reset_index()
-)
-
-merchant_distribution["transaction_pct"] = (
-    merchant_distribution["transaction_rows"]
-    / merchant_distribution["transaction_rows"].sum()
-    * 100
-).round(2)
-
-display(merchant_distribution)
