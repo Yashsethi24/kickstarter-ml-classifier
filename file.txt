@@ -1,9 +1,22 @@
-.assign(
-    MERCHANT=lambda x: (
-        x["MERCHANT"]
-        .str.replace(r"[#0-9]+", "", regex=True)
-        .str.replace(r"\s+", " ", regex=True)
-        .str.strip()
-        .replace("", pd.NA)
-    )
+timing_order = [
+    "0–48 hours",
+    ">48 hours–30 days",
+    ">30 days",
+]
+
+card_distribution = (
+    claims_df.loc[claims_df["TRANS_TIMING"].isin(timing_order)]
+    .groupby(["CLAIM_YM", "TRANS_TIMING"])[CARD]
+    .nunique()
+    .unstack(fill_value=0)
+    .reindex(columns=timing_order, fill_value=0)
+    .rename(columns={
+        "0–48 hours": "cards_0_to_48_hours",
+        ">48 hours–30 days": "cards_after_48_hours_to_30_days",
+        ">30 days": "cards_after_30_days",
+    })
+    .sort_index()
+    .reset_index()
 )
+
+display(card_distribution)
