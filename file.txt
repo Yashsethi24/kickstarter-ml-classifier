@@ -1,14 +1,37 @@
-# Month based on claim date, not transaction date.
-claims_df["CLAIM_YEAR_MONTH"] = (
-    claims_df["FST_CLM_DT"].dt.strftime("%Y-%m")
-)
+mask = claims_df["TRANS_HOURS_FROM_OPEN"].gt(48)
 
-same_month_claims_distribution = (
-    claims_df.loc[claims_df["CLAIM_TIMING"].eq("Same Month")]
-    .groupby("CLAIM_YEAR_MONTH")
-    .agg(number_of_claims=("PYID", "nunique"))
+merchant_distribution = (
+    claims_df.loc[mask]
+    .assign(
+        MERCHANT=lambda x: x[MERCHANT].replace("", pd.NA)
+    )
+    .assign(
+        MERCHANT=lambda x: x["MERCHANT"].mask(
+            x["MERCHANT"].str.contains(
+                r"amazon|amzn|^BUSINESS PRIME$",
+                case=False,
+                na=False,
+            ),
+            "Amazon",
+        )
+    )
+    .assign(
+        MERCHANT=lambda x: x["MERCHANT"].mask(
+            x["MERCHANT"].str.contains(
+                r"wal[\s-]*mart",
+                case=False,
+                na=False,
+            ),
+            "Walmart",
+        )
+    )
+    .groupby(["CLAIM_YM", "CLAIM_TIMING", "MERCHANT"], dropna=False)
+    .agg(
+        transaction_rows=(TXN, "size"),
+        unique_cards=(CARD, "nunique"),
+    )
+    .sort_values("transaction_rows", ascending=False)
     .reset_index()
-    .sort_values("CLAIM_YEAR_MONTH")
 )
 
-display(same_month_claims_distribution)
+display(merchant_distribution)
