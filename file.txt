@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import re
 
-# Eligible facts in their existing ranking order.
+# 1. Eligible facts, preserving ranking order.
 selected = ranking[["fact", "FPR"]].copy()
 selected["FPR"] = pd.to_numeric(selected["FPR"], errors="coerce")
 selected = (
@@ -11,22 +11,47 @@ selected = (
     .drop_duplicates("fact")
 )
 
+# 2. Prepare data.
 df = final_df[
-    ["APPLICATION_NUMBER", "fraud", "facts_fired", "total_current_balance"]
+    [
+        "APPLICATION_NUMBER",
+        "LOAD_DATE",
+        "fraud",
+        "facts_fired",
+        "total_current_balance",
+    ]
 ].copy()
 
-if df["APPLICATION_NUMBER"].isna().any():
-    raise ValueError("APPLICATION_NUMBER contains missing values.")
+df["LOAD_DATE"] = pd.to_datetime(df["LOAD_DATE"], errors="raise")
 
-df["fraud"] = pd.to_numeric(df["fraud"], errors="raise")
-df["total_current_balance"] = pd.to_numeric(
-    df["total_current_balance"], errors="raise"
-)
+if df[["APPLICATION_NUMBER", "LOAD_DATE"]].isna().any().any():
+    raise ValueError("APPLICATION_NUMBER or LOAD_DATE contains missing values.")
+
+df["application_month"] = df["LOAD_DATE"].dt.to_period("M").astype(str)
+
+df["fraud"] = pd.to_numeric(
+    df["fraud"], errors="raise"
+).fillna(0)
 
 if not df["fraud"].isin([0, 1]).all():
     raise ValueError("fraud must contain only 0 or 1.")
 
-# Verify that each application's repeated rows have the same balance.
+df["total_current_balance"] = pd.to_numeric(
+    df["total_current_balance"], errors="raise"
+)
+
+# Confirm each application belongs to one month.
+month_counts = (
+    df.groupby("APPLICATION_NUMBER")["application_month"].nunique()
+)
+
+if month_counts.gt(1).any():
+    raise ValueError(
+        "Some applications have LOAD_DATE values in different months. "
+        "Choose the intended application load date before continuing."
+    )
+
+# Confirm repeated rows have the same application-level balance.
 balance_counts = (
     df.groupby("APPLICATION_NUMBER")["total_current_balance"]
       .nunique(dropna=False)
@@ -38,7 +63,6 @@ if balance_counts.gt(1).any():
         "Resolve card-level balances or historical snapshots first."
     )
 
-# Create the two columns BEFORE grouping.
 df["positive_balance"] = (
     df["total_current_balance"].clip(lower=0).fillna(0)
 )
@@ -57,50 +81,58 @@ df["fact_set"] = df["facts_fired"].fillna("").map(
     }
 )
 
-# Count each application once, combining all its fired facts.
+# One row per application, combining all fired facts.
 df = (
     df.groupby("APPLICATION_NUMBER", as_index=False)
       .agg(
+          application_month=("application_month", "first"),
           fraud=("fraud", "max"),
           positive_balance=("positive_balance", "first"),
           fact_set=("fact_set", lambda values: set().union(*values)),
       )
 )
 
-remaining = pd.Series(True, index=df.index)
+# 3. Calculate incremental performance independently for each month.
 results = []
 
-for position, row in enumerate(selected.itertuples(index=False), start=1):
-    fact_name = clean_fact(row.fact)
+for month, monthly_df in df.groupby("application_month", sort=True):
+    remaining = pd.Series(True, index=monthly_df.index)
 
-    matched = remaining & df["fact_set"].map(
-        lambda facts: fact_name in facts
-    )
+    for position, row in enumerate(
+        selected.itertuples(index=False), start=1
+    ):
+        fact_name = clean_fact(row.fact)
 
-    captured = df.loc[matched]
-    fraud_mask = captured["fraud"].eq(1)
+        matched = remaining & monthly_df["fact_set"].map(
+            lambda facts: fact_name in facts
+        )
 
-    applications = len(captured)
-    fraud_applications = int(fraud_mask.sum())
-    nonfraud_applications = applications - fraud_applications
+        captured = monthly_df.loc[matched]
+        fraud_mask = captured["fraud"].eq(1)
 
-    results.append({
-        "order": position,
-        "fact": row.fact,
-        "original_FPR": row.FPR,
-        "incremental_applications": applications,
-        "incremental_fraud_applications": fraud_applications,
-        "incremental_nonfraud_applications": nonfraud_applications,
-        "incremental_FPR": (
-            nonfraud_applications / fraud_applications
-            if fraud_applications else np.nan
-        ),
-        "incremental_fraud_balance": captured.loc[
-            fraud_mask, "positive_balance"
-        ].sum(),
-    })
+        applications = len(captured)
+        fraud_applications = int(fraud_mask.sum())
+        nonfraud_applications = applications - fraud_applications
 
-    remaining.loc[matched] = False
+        results.append({
+            "application_month": month,
+            "order": position,
+            "fact": row.fact,
+            "original_FPR": row.FPR,
+            "incremental_applications": applications,
+            "incremental_fraud_applications": fraud_applications,
+            "incremental_nonfraud_applications": nonfraud_applications,
+            "incremental_FPR": (
+                nonfraud_applications / fraud_applications
+                if fraud_applications else np.nan
+            ),
+            "incremental_fraud_balance": captured.loc[
+                fraud_mask, "positive_balance"
+            ].sum(),
+        })
 
-incremental_performance = pd.DataFrame(results)
-display(incremental_performance)
+        remaining.loc[matched] = False
+
+monthly_incremental_performance = pd.DataFrame(results)
+
+display(monthly_incremental_performance)
