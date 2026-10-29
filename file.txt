@@ -1,51 +1,97 @@
-%sql
-WITH cards AS (
-    -- One fraud indicator per card prevents repeated source rows
-    -- from multiplying the balance.
-    SELECT
-        ACCT_NUM,
-        MAX(FRAUD) AS FRAUD
-    FROM card_flags
-    GROUP BY ACCT_NUM
-),
+import pandas as pd
+import numpy as np
+import re
 
-application_map AS (
-    -- Remove repeated copies of the same account/application mapping.
-    SELECT DISTINCT
-        ACCOUNT_NUMBER,
-        APPLICATION_NUMBER
-    FROM hive_metastore.fiqm.applications
-    WHERE ACCOUNT_NUMBER != ''
-      AND APPLICATION_NUMBER != ''
-),
+# 1. Select eligible facts, preserving their existing ranking order.
+selected = ranking[["fact", "FPR"]].copy()
+selected["FPR"] = pd.to_numeric(selected["FPR"], errors="coerce")
 
-card_balances AS (
-    SELECT
-        c.ACCT_NUM,
-        s.APPLID,
-        s.CUR_BAL_TOT,
-        c.FRAUD
-    FROM cards c
-    LEFT JOIN tsys.v_cfm_tsys_mbna_acct_slim s
-        ON c.ACCT_NUM = s.ACCT_NUM
-),
-
-mapped_cards AS (
-    SELECT
-        a.APPLICATION_NUMBER,
-        c.ACCT_NUM,
-        c.CUR_BAL_TOT,
-        c.FRAUD
-    FROM card_balances c
-    LEFT JOIN application_map a
-        ON TRY_CAST(c.APPLID AS DECIMAL(38, 0))
-         = TRY_CAST(a.ACCOUNT_NUMBER AS DECIMAL(38, 0))
+selected = (
+    selected.loc[selected["FPR"].le(2)]
+    .dropna(subset=["fact"])
+    .drop_duplicates("fact", keep="first")
 )
 
-SELECT
-    APPLICATION_NUMBER,
-    SUM(CUR_BAL_TOT) AS TOTAL_CURRENT_BALANCE,
-    MAX(FRAUD)       AS FRAUD
-FROM mapped_cards
-WHERE APPLICATION_NUMBER IS NOT NULL
-GROUP BY APPLICATION_NUMBER;
+# 2. Prepare application-level data.
+df = final_df[
+    ["APPLICATION_NUMBER", "fraud", "facts_fired", "total_current_balance"]
+].copy()
+
+if df["APPLICATION_NUMBER"].isna().any():
+    raise ValueError("APPLICATION_NUMBER contains missing values.")
+
+# Avoid silently counting an application's balance more than once.
+if df["APPLICATION_NUMBER"].duplicated().any():
+    raise ValueError(
+        "final_df must have one row per APPLICATION_NUMBER. "
+        "Resolve duplicate applications before running this calculation."
+    )
+
+df["fraud"] = pd.to_numeric(df["fraud"], errors="raise")
+if not df["fraud"].isin([0, 1]).all():
+    raise ValueError("fraud must contain only 0 or 1.")
+
+df["total_current_balance"] = pd.to_numeric(
+    df["total_current_balance"], errors="raise"
+)
+
+# Negative balances contribute zero; missing balances also contribute zero.
+df["positive_balance"] = df["total_current_balance"].clip(lower=0).fillna(0)
+
+# facts_fired is pipe-separated, e.g.:
+# Email.SomeFact [High] (46) | Velocity.SomeOtherFact [Low] (5)
+# Remove trailing display labels/scores so names match ranking["fact"].
+def clean_fact(value):
+    value = str(value).strip()
+    value = re.sub(r"\s*\([-+]?\d+(?:\.\d+)?\)\s*$", "", value)
+    value = re.sub(r"\s*\[[^\]]*\]\s*$", "", value)
+    return value.strip()
+
+df["fact_set"] = df["facts_fired"].fillna("").map(
+    lambda value: {
+        clean_fact(part)
+        for part in str(value).split("|")
+        if part.strip()
+    }
+)
+
+# 3. Capture applications once, under their first matching fact.
+remaining = pd.Series(True, index=df.index)
+results = []
+
+for position, row in enumerate(selected.itertuples(index=False), start=1):
+    fact_name = clean_fact(row.fact)
+
+    matched = remaining & df["fact_set"].map(
+        lambda facts: fact_name in facts
+    )
+
+    captured = df.loc[matched]
+    applications = len(captured)
+    fraud_applications = int(captured["fraud"].eq(1).sum())
+    nonfraud_applications = applications - fraud_applications
+
+    fraud_balance = captured.loc[
+        captured["fraud"].eq(1), "positive_balance"
+    ].sum()
+
+    results.append({
+        "order": position,
+        "fact": row.fact,
+        "original_FPR": row.FPR,
+        "incremental_applications": applications,
+        "incremental_fraud_applications": fraud_applications,
+        "incremental_nonfraud_applications": nonfraud_applications,
+        "incremental_FPR": (
+            nonfraud_applications / fraud_applications
+            if fraud_applications else np.nan
+        ),
+        "incremental_fraud_balance": fraud_balance,
+    })
+
+    # Exclude every captured application from all subsequent facts.
+    remaining.loc[matched] = False
+
+incremental_performance = pd.DataFrame(results)
+
+display(incremental_performance)
