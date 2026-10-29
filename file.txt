@@ -1,24 +1,17 @@
-main_df = pd.read_csv(
-    main_files[0],
-    sep=None,
-    engine="python",
-    dtype=str,
+# Inside the loop: join this folder's files first.
+joined_df = main_df.merge(
+    mapping_df,
+    on=JOIN_KEY,
+    how="left",
+    suffixes=("", "_mapping"),
 )
 
-mapping_df = pd.read_csv(
-    mapping_path,
-    sep=None,
-    engine="python",
-    dtype=str,
-)
+joined_df["category"] = category
+joined_df["portfolio"] = portfolio
 
-for path in [main_files[0], mapping_path]:
-    print(f"\nFILE: {path.name}")
+dataframes.append(joined_df)
 
-    with open(path, "r", encoding="utf-8-sig") as file:
-        for line_number, line in enumerate(file, start=1):
-            if line_number <= 3 or 313 <= line_number <= 318:
-                print(line_number, repr(line))
+# Outside both loops: concatenate all six joined results.
+final_df = pd.concat(dataframes, ignore_index=True, sort=False)
 
-            if line_number >= 318:
-                break
+display(final_df)
