@@ -6,62 +6,64 @@ BASE_PATH = Path(
     "Applications Fraud/TU IDX/Backbook"
 )
 
-SCORED_PATH = BASE_PATH / "Scored_Files" / "8681"
-JOIN_KEY = "unique_application_id"  # Replace with exact column name
+JOIN_KEY = "unique_application_id"  # Replace with the exact column name
+MAPPING_FILE = "application_id_mapping.csv"
 
-# Portfolio, category, mapping folder, scored filename
-files = [
-    ("TDCT", "genuine", "Genuines", "20261015_TDCT_Good_Accts.txt"),
-    ("TDCT", "fraud",   "Frauds",   "20261015_TDCT_Frauds.txt"),
-    ("TDCT", "DLQ",     "DLQ",      "20261015_TDCT_DLQ.txt"),
-    ("MBNA", "genuine", "Genuines", "20261015_MBNA_Good_accts.txt"),
-    ("MBNA", "fraud",   "Frauds",   "20261015_MBNA_Frauds.txt"),
-    ("MBNA", "DLQ",     "DLQ",      "20261015_MBNA_DLQ.txt"),
-]
+categories = {
+    "Genuines": "genuine",
+    "Frauds": "fraud",
+    "DLQ": "DLQ",
+}
 
 dataframes = []
 
-for portfolio, category, mapping_folder, filename in files:
-    main_path = SCORED_PATH / filename
-    mapping_path = (
-        BASE_PATH / portfolio / mapping_folder
-        / "application_id_mapping.csv"
-    )
+for portfolio in ["TDCT", "MBNA"]:
+    for folder_name, category in categories.items():
+        folder = BASE_PATH / portfolio / folder_name
+        mapping_path = folder / MAPPING_FILE
 
-    # Scored files are pipe-separated; mapping files are comma-separated.
-    main_df = pd.read_csv(main_path, sep="|", dtype=str)
-    mapping_df = pd.read_csv(mapping_path, sep=",", dtype=str)
+        # Find the main CSV, excluding the mapping file.
+        main_files = [
+            path for path in folder.iterdir()
+            if path.suffix.lower() == ".csv"
+            and path.name.lower() != MAPPING_FILE.lower()
+        ]
 
-    # Remove surrounding whitespace from column headers.
-    main_df.columns = main_df.columns.str.strip()
-    mapping_df.columns = mapping_df.columns.str.strip()
-
-    for name, df in [("scored", main_df), ("mapping", mapping_df)]:
-        if JOIN_KEY not in df.columns:
+        if len(main_files) != 1:
             raise ValueError(
-                f"{JOIN_KEY!r} missing from {name} file for "
-                f"{portfolio}/{category}. "
-                f"Available columns: {df.columns.tolist()}"
+                f"Expected exactly one main CSV in {folder}; "
+                f"found {len(main_files)}."
             )
 
-    # Prevent missing application IDs from matching each other.
-    mapping_df = mapping_df.loc[
-        mapping_df[JOIN_KEY].notna()
-        & mapping_df[JOIN_KEY].ne("")
-    ]
+        # Read as strings to preserve leading zeros in application IDs.
+        main_df = pd.read_csv(main_files[0], dtype=str)
+        mapping_df = pd.read_csv(mapping_path, dtype=str)
 
-    # Join this file before concatenating. Multiple mapping matches are allowed.
-    joined_df = main_df.merge(
-        mapping_df,
-        on=JOIN_KEY,
-        how="left",
-        suffixes=("", "_mapping"),
-    )
+        for name, df in [("main", main_df), ("mapping", mapping_df)]:
+            if JOIN_KEY not in df.columns:
+                raise ValueError(
+                    f"{JOIN_KEY!r} missing from {name} CSV in {folder}. "
+                    f"Available columns: {df.columns.tolist()}"
+                )
 
-    joined_df["category"] = category
-    joined_df["portfolio"] = portfolio
+        # Exclude missing mapping keys so pandas cannot match null IDs.
+        mapping_df = mapping_df.loc[
+            mapping_df[JOIN_KEY].notna()
+            & mapping_df[JOIN_KEY].ne("")
+        ]
 
-    dataframes.append(joined_df)
+        joined_df = main_df.merge(
+            mapping_df,
+            on=JOIN_KEY,
+            how="left",
+            suffixes=("", "_mapping"),
+            validate="many_to_one",
+        )
+
+        joined_df["category"] = category
+        joined_df["portfolio"] = portfolio
+
+        dataframes.append(joined_df)
 
 final_df = pd.concat(dataframes, ignore_index=True, sort=False)
 
