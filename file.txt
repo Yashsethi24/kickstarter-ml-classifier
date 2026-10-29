@@ -1,10 +1,24 @@
-Hi Neli/Rick,
+main_df = pd.read_csv(
+    main_files[0],
+    sep=None,
+    engine="python",
+    dtype=str,
+)
 
-We have a document outlining the required fields for uploading data to the EQ portal (attached).
+mapping_df = pd.read_csv(
+    mapping_path,
+    sep=None,
+    engine="python",
+    dtype=str,
+)
 
-I attempted to upload the data using the 13 mandatory fields; however, the upload was unsuccessful.
+for path in [main_files[0], mapping_path]:
+    print(f"\nFILE: {path.name}")
 
-Could you please share your availability for tomorrow so we can discuss the issue over a call and work toward resolving it as soon as possible?
+    with open(path, "r", encoding="utf-8-sig") as file:
+        for line_number, line in enumerate(file, start=1):
+            if line_number <= 3 or 313 <= line_number <= 318:
+                print(line_number, repr(line))
 
-Regards,
-Yash
+            if line_number >= 318:
+                break
