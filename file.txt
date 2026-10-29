@@ -1,14 +1,51 @@
-first_transaction_distribution = (
-    claims_df.groupby(
-        ["CLAIM_YM", "FIRST_TRANS_DAY_BUCKET"],
-        observed=True,
-    )[CARD]
-    .nunique()
-    .unstack("FIRST_TRANS_DAY_BUCKET", fill_value=0)
-    .reindex(columns=day_labels, fill_value=0)
-    .sort_index()
-    .rename_axis(columns=None)
-    .reset_index()
+%sql
+WITH cards AS (
+    -- One fraud indicator per card prevents repeated source rows
+    -- from multiplying the balance.
+    SELECT
+        ACCT_NUM,
+        MAX(FRAUD) AS FRAUD
+    FROM card_flags
+    GROUP BY ACCT_NUM
+),
+
+application_map AS (
+    -- Remove repeated copies of the same account/application mapping.
+    SELECT DISTINCT
+        ACCOUNT_NUMBER,
+        APPLICATION_NUMBER
+    FROM hive_metastore.fiqm.applications
+    WHERE ACCOUNT_NUMBER != ''
+      AND APPLICATION_NUMBER != ''
+),
+
+card_balances AS (
+    SELECT
+        c.ACCT_NUM,
+        s.APPLID,
+        s.CUR_BAL_TOT,
+        c.FRAUD
+    FROM cards c
+    LEFT JOIN tsys.v_cfm_tsys_mbna_acct_slim s
+        ON c.ACCT_NUM = s.ACCT_NUM
+),
+
+mapped_cards AS (
+    SELECT
+        a.APPLICATION_NUMBER,
+        c.ACCT_NUM,
+        c.CUR_BAL_TOT,
+        c.FRAUD
+    FROM card_balances c
+    LEFT JOIN application_map a
+        ON TRY_CAST(c.APPLID AS DECIMAL(38, 0))
+         = TRY_CAST(a.ACCOUNT_NUMBER AS DECIMAL(38, 0))
 )
 
-display(first_transaction_distribution)
+SELECT
+    APPLICATION_NUMBER,
+    SUM(CUR_BAL_TOT) AS TOTAL_CURRENT_BALANCE,
+    MAX(FRAUD)       AS FRAUD
+FROM mapped_cards
+WHERE APPLICATION_NUMBER IS NOT NULL
+GROUP BY APPLICATION_NUMBER;
