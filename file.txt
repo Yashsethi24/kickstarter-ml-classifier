@@ -1,17 +1,68 @@
-# Inside the loop: join this folder's files first.
-joined_df = main_df.merge(
-    mapping_df,
-    on=JOIN_KEY,
-    how="left",
-    suffixes=("", "_mapping"),
+from pathlib import Path
+import pandas as pd
+
+BASE_PATH = Path(
+    "/Workspace/Users/rajshreyas.penukonda@td.com/"
+    "Applications Fraud/TU IDX/Backbook"
 )
 
-joined_df["category"] = category
-joined_df["portfolio"] = portfolio
+SCORED_PATH = BASE_PATH / "Scored_Files" / "8681"
+JOIN_KEY = "unique_application_id"  # Replace with exact column name
 
-dataframes.append(joined_df)
+# Portfolio, category, mapping folder, scored filename
+files = [
+    ("TDCT", "genuine", "Genuines", "20261015_TDCT_Good_Accts.txt"),
+    ("TDCT", "fraud",   "Frauds",   "20261015_TDCT_Frauds.txt"),
+    ("TDCT", "DLQ",     "DLQ",      "20261015_TDCT_DLQ.txt"),
+    ("MBNA", "genuine", "Genuines", "20261015_MBNA_Good_accts.txt"),
+    ("MBNA", "fraud",   "Frauds",   "20261015_MBNA_Frauds.txt"),
+    ("MBNA", "DLQ",     "DLQ",      "20261015_MBNA_DLQ.txt"),
+]
 
-# Outside both loops: concatenate all six joined results.
+dataframes = []
+
+for portfolio, category, mapping_folder, filename in files:
+    main_path = SCORED_PATH / filename
+    mapping_path = (
+        BASE_PATH / portfolio / mapping_folder
+        / "application_id_mapping.csv"
+    )
+
+    # Scored files are pipe-separated; mapping files are comma-separated.
+    main_df = pd.read_csv(main_path, sep="|", dtype=str)
+    mapping_df = pd.read_csv(mapping_path, sep=",", dtype=str)
+
+    # Remove surrounding whitespace from column headers.
+    main_df.columns = main_df.columns.str.strip()
+    mapping_df.columns = mapping_df.columns.str.strip()
+
+    for name, df in [("scored", main_df), ("mapping", mapping_df)]:
+        if JOIN_KEY not in df.columns:
+            raise ValueError(
+                f"{JOIN_KEY!r} missing from {name} file for "
+                f"{portfolio}/{category}. "
+                f"Available columns: {df.columns.tolist()}"
+            )
+
+    # Prevent missing application IDs from matching each other.
+    mapping_df = mapping_df.loc[
+        mapping_df[JOIN_KEY].notna()
+        & mapping_df[JOIN_KEY].ne("")
+    ]
+
+    # Join this file before concatenating. Multiple mapping matches are allowed.
+    joined_df = main_df.merge(
+        mapping_df,
+        on=JOIN_KEY,
+        how="left",
+        suffixes=("", "_mapping"),
+    )
+
+    joined_df["category"] = category
+    joined_df["portfolio"] = portfolio
+
+    dataframes.append(joined_df)
+
 final_df = pd.concat(dataframes, ignore_index=True, sort=False)
 
 display(final_df)
