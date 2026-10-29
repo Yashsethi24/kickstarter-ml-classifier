@@ -1,138 +1,99 @@
-import pandas as pd
-import numpy as np
-import re
-
-# 1. Eligible facts, preserving ranking order.
-selected = ranking[["fact", "FPR"]].copy()
-selected["FPR"] = pd.to_numeric(selected["FPR"], errors="coerce")
-selected = (
-    selected.loc[selected["FPR"].le(2)]
-    .dropna(subset=["fact"])
-    .drop_duplicates("fact")
-)
-
-# 2. Prepare data.
-df = final_df[
-    [
-        "APPLICATION_NUMBER",
-        "LOAD_DATE",
-        "fraud",
-        "facts_fired",
-        "total_current_balance",
-    ]
-].copy()
-
-df["LOAD_DATE"] = pd.to_datetime(df["LOAD_DATE"], errors="raise")
-
-if df[["APPLICATION_NUMBER", "LOAD_DATE"]].isna().any().any():
-    raise ValueError("APPLICATION_NUMBER or LOAD_DATE contains missing values.")
-
-df["application_month"] = df["LOAD_DATE"].dt.to_period("M").astype(str)
-
-df["fraud"] = pd.to_numeric(
-    df["fraud"], errors="raise"
-).fillna(0)
-
-if not df["fraud"].isin([0, 1]).all():
-    raise ValueError("fraud must contain only 0 or 1.")
-
-df["total_current_balance"] = pd.to_numeric(
-    df["total_current_balance"], errors="raise"
-)
-
-# Confirm each application belongs to one month.
-month_counts = (
-    df.groupby("APPLICATION_NUMBER")["application_month"].nunique()
-)
-
-if month_counts.gt(1).any():
-    raise ValueError(
-        "Some applications have LOAD_DATE values in different months. "
-        "Choose the intended application load date before continuing."
-    )
-
-# Confirm repeated rows have the same application-level balance.
-balance_counts = (
-    df.groupby("APPLICATION_NUMBER")["total_current_balance"]
-      .nunique(dropna=False)
-)
-
-if balance_counts.gt(1).any():
-    raise ValueError(
-        "Some applications have different balances across rows. "
-        "Resolve card-level balances or historical snapshots first."
-    )
-
-df["positive_balance"] = (
-    df["total_current_balance"].clip(lower=0).fillna(0)
-)
-
-def clean_fact(value):
-    value = str(value).strip()
-    value = re.sub(r"\s*\([-+]?\d+(?:\.\d+)?\)\s*$", "", value)
-    value = re.sub(r"\s*\[[^\]]*\]\s*$", "", value)
-    return value.strip()
-
-df["fact_set"] = df["facts_fired"].fillna("").map(
-    lambda value: {
-        clean_fact(part)
-        for part in str(value).split("|")
-        if part.strip()
-    }
-)
-
-# One row per application, combining all fired facts.
-df = (
-    df.groupby("APPLICATION_NUMBER", as_index=False)
-      .agg(
-          application_month=("application_month", "first"),
-          fraud=("fraud", "max"),
-          positive_balance=("positive_balance", "first"),
-          fact_set=("fact_set", lambda values: set().union(*values)),
-      )
-)
-
-# 3. Calculate incremental performance independently for each month.
-results = []
-
-for month, monthly_df in df.groupby("application_month", sort=True):
-    remaining = pd.Series(True, index=monthly_df.index)
-
-    for position, row in enumerate(
-        selected.itertuples(index=False), start=1
-    ):
-        fact_name = clean_fact(row.fact)
-
-        matched = remaining & monthly_df["fact_set"].map(
-            lambda facts: fact_name in facts
-        )
-
-        captured = monthly_df.loc[matched]
-        fraud_mask = captured["fraud"].eq(1)
-
-        applications = len(captured)
-        fraud_applications = int(fraud_mask.sum())
-        nonfraud_applications = applications - fraud_applications
-
-        results.append({
-            "application_month": month,
-            "order": position,
-            "fact": row.fact,
-            "original_FPR": row.FPR,
-            "incremental_applications": applications,
-            "incremental_fraud_applications": fraud_applications,
-            "incremental_nonfraud_applications": nonfraud_applications,
-            "incremental_FPR": (
-                nonfraud_applications / fraud_applications
-                if fraud_applications else np.nan
-            ),
-            "incremental_fraud_balance": captured.loc[
-                fraud_mask, "positive_balance"
-            ].sum(),
-        })
-
-        remaining.loc[matched] = False
-
-monthly_incremental_performance = pd.DataFrame(results)
-
-display(monthly_incremental_performance)
+E610221433
+E610219789
+E610220002
+E610220314
+E610220336
+E610219948
+E610219838
+E610220436
+E610219487
+E610220021
+E610221505
+E610221620
+E610221579
+E610221290
+E610221253
+E610221609
+E610221542
+E610221602
+E610221130
+E610220179
+E610219779
+E610219757
+E610220238
+E610219869
+E610220532
+E610219436
+E610219744
+E610221141
+E610219786
+E610220399
+E610219344
+E610221145
+E610221064
+E610221198
+E610221166
+E610219780
+E610219854
+E610219995
+E610221519
+E610221509
+E610221526
+E610221550
+E610221487
+E610221332
+E610221480
+E610221227
+E610221477
+E610221541
+E610221515
+E610221494
+E610221508
+E610221368
+E610221501
+E610221248
+E610221405
+E610221571
+E610220696
+E610220445
+E610220257
+E610219517
+E610220663
+E610219394
+E610220452
+E610220401
+E610220573
+E610220424
+E610220350
+E610220900
+E610220288
+E610220552
+E610220611
+E610219402
+E610220881
+E610220876
+E610220907
+E610220182
+E610220286
+E610220272
+E610220685
+E610221155
+E610220857
+E610220764
+E610220351
+E610220165
+E610221026
+E610219865
+E610220653
+E610220919
+E610220312
+E610220437
+E610220928
+E610220364
+E610220941
+E610220322
+E610220922
+E610220648
+E610219694
+E610220460
+E610220675
