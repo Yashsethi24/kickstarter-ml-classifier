@@ -1,99 +1,70 @@
-E610221433
-E610219789
-E610220002
-E610220314
-E610220336
-E610219948
-E610219838
-E610220436
-E610219487
-E610220021
-E610221505
-E610221620
-E610221579
-E610221290
-E610221253
-E610221609
-E610221542
-E610221602
-E610221130
-E610220179
-E610219779
-E610219757
-E610220238
-E610219869
-E610220532
-E610219436
-E610219744
-E610221141
-E610219786
-E610220399
-E610219344
-E610221145
-E610221064
-E610221198
-E610221166
-E610219780
-E610219854
-E610219995
-E610221519
-E610221509
-E610221526
-E610221550
-E610221487
-E610221332
-E610221480
-E610221227
-E610221477
-E610221541
-E610221515
-E610221494
-E610221508
-E610221368
-E610221501
-E610221248
-E610221405
-E610221571
-E610220696
-E610220445
-E610220257
-E610219517
-E610220663
-E610219394
-E610220452
-E610220401
-E610220573
-E610220424
-E610220350
-E610220900
-E610220288
-E610220552
-E610220611
-E610219402
-E610220881
-E610220876
-E610220907
-E610220182
-E610220286
-E610220272
-E610220685
-E610221155
-E610220857
-E610220764
-E610220351
-E610220165
-E610221026
-E610219865
-E610220653
-E610220919
-E610220312
-E610220437
-E610220928
-E610220364
-E610220941
-E610220322
-E610220922
-E610220648
-E610219694
-E610220460
-E610220675
+from pathlib import Path
+import pandas as pd
+
+BASE_PATH = Path(
+    "/Workspace/Users/rajshreyas.penukonda@td.com/"
+    "Applications Fraud/TU IDX/Backbook"
+)
+
+JOIN_KEY = "unique_application_id"  # Replace with the exact column name
+MAPPING_FILE = "application_id_mapping.csv"
+
+categories = {
+    "Genuines": "genuine",
+    "Frauds": "fraud",
+    "DLQ": "DLQ",
+}
+
+dataframes = []
+
+for portfolio in ["TDCT", "MBNA"]:
+    for folder_name, category in categories.items():
+        folder = BASE_PATH / portfolio / folder_name
+        mapping_path = folder / MAPPING_FILE
+
+        # Find the main CSV, excluding the mapping file.
+        main_files = [
+            path for path in folder.iterdir()
+            if path.suffix.lower() == ".csv"
+            and path.name.lower() != MAPPING_FILE.lower()
+        ]
+
+        if len(main_files) != 1:
+            raise ValueError(
+                f"Expected exactly one main CSV in {folder}; "
+                f"found {len(main_files)}."
+            )
+
+        # Read as strings to preserve leading zeros in application IDs.
+        main_df = pd.read_csv(main_files[0], dtype=str)
+        mapping_df = pd.read_csv(mapping_path, dtype=str)
+
+        for name, df in [("main", main_df), ("mapping", mapping_df)]:
+            if JOIN_KEY not in df.columns:
+                raise ValueError(
+                    f"{JOIN_KEY!r} missing from {name} CSV in {folder}. "
+                    f"Available columns: {df.columns.tolist()}"
+                )
+
+        # Exclude missing mapping keys so pandas cannot match null IDs.
+        mapping_df = mapping_df.loc[
+            mapping_df[JOIN_KEY].notna()
+            & mapping_df[JOIN_KEY].ne("")
+        ]
+
+        joined_df = main_df.merge(
+            mapping_df,
+            on=JOIN_KEY,
+            how="left",
+            suffixes=("", "_mapping"),
+            validate="many_to_one",
+        )
+
+        joined_df["category"] = category
+        joined_df["portfolio"] = portfolio
+
+        dataframes.append(joined_df)
+
+final_df = pd.concat(dataframes, ignore_index=True, sort=False)
+
+display(final_df)
