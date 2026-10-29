@@ -1,44 +1,118 @@
-main_df = pd.read_csv(
-    main_files[0],
-    sep=None,
-    engine="python",
-    dtype=str,
+from pathlib import Path
+import pandas as pd
+
+BASE_PATH = Path(
+    "/Workspace/Users/rajshreyas.penukonda@td.com/"
+    "Applications Fraud/TU IDX/Backbook"
 )
 
-mapping_df = pd.read_csv(
-    mapping_path,
-    sep=None,
-    engine="python",
-    dtype=str,
-)
+SCORED_PATH = BASE_PATH / "Scored_Files" / "8681"
+JOIN_KEY = "Unique_record_ID"
 
+# Portfolio, category, mapping folder, scored filename
+files = [
+    ("TDCT", "genuine", "Genuines", "20261015_TDCT_Good_Accts.txt"),
+    ("TDCT", "fraud",   "Frauds",   "20261015_TDCT_Frauds.txt"),
+    ("TDCT", "DLQ",     "DLQ",      "20261015_TDCT_DLQ.txt"),
+    ("MBNA", "genuine", "Genuines", "20261015_MBNA_Good_accts.txt"),
+    ("MBNA", "fraud",   "Frauds",   "20261015_MBNA_Frauds.txt"),
+    ("MBNA", "DLQ",     "DLQ",      "20261015_MBNA_DLQ.txt"),
+]
 
-for path in [main_files[0], mapping_path]:
-    print(f"\nFILE: {path.name}")
+dataframes = []
+summary = []
 
-    with open(path, "r", encoding="utf-8-sig") as file:
-        for line_number, line in enumerate(file, start=1):
-            if line_number <= 3 or 313 <= line_number <= 318:
-                print(line_number, repr(line))
+for portfolio, category, mapping_folder, filename in files:
+    main_path = SCORED_PATH / filename
+    mapping_path = (
+        BASE_PATH
+        / portfolio
+        / mapping_folder
+        / "application_id_mapping.csv"
+    )
 
-            if line_number >= 318:
-                break
+    # Read IDs as strings to preserve leading zeros.
+    main_df = pd.read_csv(
+        main_path,
+        sep="|",
+        dtype=str,
+        encoding="utf-8-sig",
+    )
 
+    mapping_df = pd.read_csv(
+        mapping_path,
+        sep=",",
+        dtype=str,
+        encoding="utf-8-sig",
+    )
 
-# Inside the loop: join this folder's files first.
-joined_df = main_df.merge(
-    mapping_df,
-    on=JOIN_KEY,
-    how="left",
-    suffixes=("", "_mapping"),
-)
+    main_df.columns = main_df.columns.str.strip()
+    mapping_df.columns = mapping_df.columns.str.strip()
 
-joined_df["category"] = category
-joined_df["portfolio"] = portfolio
+    # Check the join column exists in both files.
+    for path, df in [(main_path, main_df), (mapping_path, mapping_df)]:
+        if JOIN_KEY not in df.columns:
+            raise ValueError(
+                f"{JOIN_KEY!r} missing from {path}.\n"
+                f"Available columns: {df.columns.tolist()}"
+            )
 
-dataframes.append(joined_df)
+    # Exclude missing mapping keys to avoid null-to-null matches.
+    mapping_df = mapping_df.loc[
+        mapping_df[JOIN_KEY].notna()
+        & mapping_df[JOIN_KEY].ne("")
+    ].copy()
 
-# Outside both loops: concatenate all six joined results.
+    # Remove identical mapping rows only.
+    mapping_df = mapping_df.drop_duplicates()
+
+    # Do not arbitrarily select between conflicting mappings.
+    conflicts = mapping_df.loc[
+        mapping_df.duplicated(subset=[JOIN_KEY], keep=False)
+    ]
+
+    if not conflicts.empty:
+        print(f"Conflicting mappings: {portfolio}/{category}")
+        display(conflicts.sort_values(JOIN_KEY).head(50))
+
+        raise ValueError(
+            f"{portfolio}/{category}: multiple different mapping rows "
+            f"exist for the same {JOIN_KEY}. "
+            "Resolve these mappings before rerunning."
+        )
+
+    # Join each file before concatenation.
+    joined_df = main_df.merge(
+        mapping_df,
+        on=JOIN_KEY,
+        how="left",
+        suffixes=("", "_mapping"),
+        validate="many_to_one",
+        indicator="_mapping_status",
+    )
+
+    matched = joined_df["_mapping_status"].eq("both").sum()
+    unmatched = joined_df["_mapping_status"].eq("left_only").sum()
+
+    summary.append({
+        "portfolio": portfolio,
+        "category": category,
+        "input_rows": len(main_df),
+        "joined_rows": len(joined_df),
+        "matched_rows": int(matched),
+        "unmatched_rows": int(unmatched),
+    })
+
+    joined_df = joined_df.drop(columns="_mapping_status")
+    joined_df["category"] = category
+    joined_df["portfolio"] = portfolio
+
+    dataframes.append(joined_df)
+
+# Combine all six joined dataframes.
 final_df = pd.concat(dataframes, ignore_index=True, sort=False)
 
+# Check join results and display the combined data.
+summary_df = pd.DataFrame(summary)
+display(summary_df)
 display(final_df)
