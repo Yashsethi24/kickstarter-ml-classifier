@@ -1,10 +1,111 @@
-Hi Muhammad,
+from pyspark.sql import functions as F
 
-Thank you for confirming that the files were successfully received on your end.
+ID = "application_number"  # Replace with your actual column name
+TARGET = "fraud"
+FACTS = "facts_fired"
 
-However, the uploaded files are still not appearing on the EQ portal. Could you please confirm whether they are visible on your end and check if any files were rejected during processing?
+# Expected format: FactName [High] (46) | OtherFact [Low] (-8)
+pattern = (
+    r"^\s*(.*?)\s*\[[^\]]*\]\s*"
+    r"\(\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+))\s*\)\s*$"
+)
 
-If there were any rejections, could you please share the reasons or error details so we can identify and resolve the issue?
+long_df = (
+    model_df
+    .select(
+        ID,
+        F.explode(F.split(F.col(FACTS), r"\|")).alias("fact_entry")
+    )
+    .withColumn("fact_entry", F.trim("fact_entry"))
+    .filter(F.col("fact_entry") != "")
+    .withColumn("fact", F.regexp_extract("fact_entry", pattern, 1))
+    .withColumn("score_text", F.regexp_extract("fact_entry", pattern, 2))
+)
 
-Regards,
-Yash
+# Check parsing before building features.
+bad_entries = long_df.filter(
+    (F.col("fact") == "") | (F.col("score_text") == "")
+)
+
+if bad_entries.limit(1).count():
+    bad_entries.select("fact_entry").show(20, truncate=False)
+    raise ValueError("Some fact entries did not match the expected format.")
+
+features = (
+    long_df
+    .withColumn("score", F.col("score_text").cast("double"))
+    .groupBy(ID)
+    .pivot("fact")
+    .agg(F.max("score"))
+)
+
+# Assumes one original row per application.
+# The left join also preserves applications with no fired facts.
+prepared_df = (
+    model_df.select(ID, TARGET)
+    .join(features, on=ID, how="left")
+    .fillna(0, subset=[c for c in features.columns if c != ID])
+)
+
+display(prepared_df)
+
+
+
+
+import numpy as np
+import pandas as pd
+
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import precision_recall_curve, precision_score, recall_score
+
+pdf = prepared_df.toPandas()
+
+X = pdf.drop(columns=[ID, TARGET])
+y = pdf[TARGET].astype(int)
+
+# Separate training, threshold selection, and final evaluation.
+X_train, X_remaining, y_train, y_remaining = train_test_split(
+    X, y, test_size=0.40, stratify=y, random_state=42
+)
+X_valid, X_test, y_valid, y_test = train_test_split(
+    X_remaining, y_remaining,
+    test_size=0.50, stratify=y_remaining, random_state=42
+)
+
+model = make_pipeline(
+    StandardScaler(),
+    LogisticRegression(class_weight="balanced", max_iter=2000)
+)
+model.fit(X_train, y_train)
+
+# Select the highest validation threshold achieving at least 90% recall.
+# Recall = fraction of actual frauds caught.
+valid_probability = model.predict_proba(X_valid)[:, 1]
+precision, recall, thresholds = precision_recall_curve(
+    y_valid, valid_probability
+)
+
+target_recall = 0.90
+eligible = np.flatnonzero(recall[:-1] >= target_recall)
+threshold = thresholds[eligible[-1]]
+
+# Evaluate once on untouched test data.
+test_probability = model.predict_proba(X_test)[:, 1]
+test_prediction = (test_probability >= threshold).astype(int)
+
+print("Threshold:", threshold)
+print("Test recall:", recall_score(y_test, test_prediction))
+print("Test precision:", precision_score(
+    y_test, test_prediction, zero_division=0
+))
+print("Fraction flagged:", test_prediction.mean())
+
+weights = pd.DataFrame({
+    "fact": X.columns,
+    "weight": model.named_steps["logisticregression"].coef_[0]
+}).sort_values("weight", ascending=False)
+
+display(weights)
