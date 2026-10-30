@@ -1,6 +1,10 @@
-Hi Rick,
+Hi Muhammad,
 
-I have raised the request; however, this issue requires priority attention. Could we connect sometime tomorrow to discuss and work toward resolving it as soon as possible?
+Thank you for confirming that the files were successfully received on your end.
+
+However, the uploaded files are still not appearing on the EQ portal. Could you please confirm whether they are visible on your end and check if any files were rejected during processing?
+
+If there were any rejections, could you please share the reasons or error details so we can identify and resolve the issue?
 
 Regards,
 Yash
