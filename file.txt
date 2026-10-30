@@ -1,5 +1,44 @@
 from pyspark.sql import functions as F
 
+# Reference a column literally, including dots in its name.
+def literal_col(name):
+    return F.col("`" + name.replace("`", "``") + "`")
+
+binary_features = (
+    long_df
+    .select(ID, "fact")
+    .distinct()
+    .withColumn("fired", F.lit(1))
+    .groupBy(ID)
+    .pivot("fact")
+    .agg(F.max("fired"))
+)
+
+feature_columns = [
+    c for c in binary_features.columns if c != ID
+]
+
+joined = (
+    model_df.select(ID, TARGET)
+    .join(binary_features, on=ID, how="left")
+)
+
+# Replace nulls with 0 using literal column references.
+binary_df = joined.select(
+    literal_col(ID),
+    literal_col(TARGET),
+    *[
+        F.coalesce(literal_col(c), F.lit(0))
+        .cast("int")
+        .alias(c)
+        for c in feature_columns
+    ]
+)
+
+display(binary_df)
+
+from pyspark.sql import functions as F
+
 binary_features = (
     long_df
     .select(ID, "fact")
