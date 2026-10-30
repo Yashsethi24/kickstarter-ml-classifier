@@ -1,53 +1,81 @@
-import numpy as np
-import pandas as pd
-from sklearn.metrics import (
-    precision_recall_curve,
-    precision_score,
-    recall_score
+from pyspark.sql import functions as F
+
+# 1. Multiply new weights by 100 and truncate decimals.
+# Examples: 0.456 -> 45; -0.456 -> -45
+integer_weights = weights[["fact", "weight"]].copy()
+integer_weights["weight_int"] = (
+    integer_weights["weight"] * 100
+).astype("int64")
+
+weights_spark = spark.createDataFrame(
+    [
+        (str(fact), int(weight))
+        for fact, weight in integer_weights[
+            ["fact", "weight_int"]
+        ].itertuples(index=False, name=None)
+    ],
+    schema="fact string, weight_int long"
 )
 
-# Choose your desired fraud concentration among flagged applications.
-target_precision = 0.80
+# 2. Count each fired fact once per application.
+fired_facts = long_df.select(ID, "fact").distinct()
 
-valid_probability = model.predict_proba(X_valid)[:, 1]
+# Ensure every fired fact has a new weight.
+unmatched = fired_facts.join(weights_spark, on="fact", how="left_anti")
 
-precision, recall, thresholds = precision_recall_curve(
-    y_valid, valid_probability
+if unmatched.limit(1).count():
+    unmatched.select("fact").distinct().show(truncate=False)
+    raise ValueError("Some fired facts have no corresponding new weight.")
+
+# 3. Sum NEW integer weights, without multiplying by original fact scores.
+application_totals = (
+    fired_facts
+    .join(weights_spark, on="fact", how="inner")
+    .groupBy(ID)
+    .agg(F.sum("weight_int").alias("total_score"))
 )
 
-# The last precision/recall pair has no corresponding threshold.
-eligible = np.flatnonzero(precision[:-1] >= target_precision)
+# Assumes one row per application in model_df.
+# Applications with no fired facts receive a score of zero.
+application_scores = (
+    model_df.select(ID, TARGET)
+    .join(application_totals, on=ID, how="left")
+    .fillna(0, subset=["total_score"])
+)
 
-if len(eligible) == 0:
-    raise ValueError(
-        "No validation threshold achieves the requested precision. "
-        "Improve the model or lower target_precision."
+# 4. Create buckets: 0–9, 10–19, 20–29, etc.
+bucketed = (
+    application_scores
+    .withColumn(
+        "bucket_start",
+        (F.floor(F.col("total_score") / F.lit(10)) * 10).cast("long")
     )
-
-# Among qualifying thresholds, choose the one catching the most fraud.
-best = eligible[np.argmax(recall[eligible])]
-threshold = thresholds[best]
-threshold_100 = threshold * 100
-
-print(f"Risk-score threshold: {threshold_100:.2f}")
-print(f"Validation precision: {precision[best]:.1%}")
-print(f"Validation recall: {recall[best]:.1%}")
-
-# Freeze the threshold and evaluate on untouched test data.
-test_probability = model.predict_proba(X_test)[:, 1]
-test_prediction = (test_probability >= threshold).astype(int)
-
-print(f"Test precision: {precision_score(y_test, test_prediction, zero_division=0):.1%}")
-print(f"Test recall: {recall_score(y_test, test_prediction, zero_division=0):.1%}")
-print(f"Test applications flagged: {test_prediction.sum():,}")
-
-# Score applications, retaining their identifiers.
-scored_applications = pdf[[ID]].copy()
-scored_applications["risk_score"] = (
-    model.predict_proba(X)[:, 1] * 100
-)
-scored_applications["flag_for_review"] = (
-    scored_applications["risk_score"] >= threshold_100
+    .withColumn("bucket_end", F.col("bucket_start") + 9)
 )
 
-display(scored_applications)
+# 5. Count genuine and fraud applications in each populated bucket.
+score_distribution = (
+    bucketed
+    .groupBy("bucket_start", "bucket_end")
+    .agg(
+        F.count("*").alias("total_applications"),
+        F.sum(
+            F.when(F.col(TARGET) == 0, 1).otherwise(0)
+        ).alias("genuine_applications"),
+        F.sum(
+            F.when(F.col(TARGET) == 1, 1).otherwise(0)
+        ).alias("fraud_applications")
+    )
+    .withColumn(
+        "fraud_percentage",
+        F.round(
+            100.0 * F.col("fraud_applications")
+            / F.col("total_applications"),
+            2
+        )
+    )
+    .orderBy("bucket_start")
+)
+
+display(application_scores)
+display(score_distribution)
