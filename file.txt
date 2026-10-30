@@ -1,111 +1,53 @@
-from pyspark.sql import functions as F
-
-ID = "application_number"  # Replace with your actual column name
-TARGET = "fraud"
-FACTS = "facts_fired"
-
-# Expected format: FactName [High] (46) | OtherFact [Low] (-8)
-pattern = (
-    r"^\s*(.*?)\s*\[[^\]]*\]\s*"
-    r"\(\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+))\s*\)\s*$"
-)
-
-long_df = (
-    model_df
-    .select(
-        ID,
-        F.explode(F.split(F.col(FACTS), r"\|")).alias("fact_entry")
-    )
-    .withColumn("fact_entry", F.trim("fact_entry"))
-    .filter(F.col("fact_entry") != "")
-    .withColumn("fact", F.regexp_extract("fact_entry", pattern, 1))
-    .withColumn("score_text", F.regexp_extract("fact_entry", pattern, 2))
-)
-
-# Check parsing before building features.
-bad_entries = long_df.filter(
-    (F.col("fact") == "") | (F.col("score_text") == "")
-)
-
-if bad_entries.limit(1).count():
-    bad_entries.select("fact_entry").show(20, truncate=False)
-    raise ValueError("Some fact entries did not match the expected format.")
-
-features = (
-    long_df
-    .withColumn("score", F.col("score_text").cast("double"))
-    .groupBy(ID)
-    .pivot("fact")
-    .agg(F.max("score"))
-)
-
-# Assumes one original row per application.
-# The left join also preserves applications with no fired facts.
-prepared_df = (
-    model_df.select(ID, TARGET)
-    .join(features, on=ID, how="left")
-    .fillna(0, subset=[c for c in features.columns if c != ID])
-)
-
-display(prepared_df)
-
-
-
-
 import numpy as np
 import pandas as pd
-
-from sklearn.model_selection import train_test_split
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import precision_recall_curve, precision_score, recall_score
-
-pdf = prepared_df.toPandas()
-
-X = pdf.drop(columns=[ID, TARGET])
-y = pdf[TARGET].astype(int)
-
-# Separate training, threshold selection, and final evaluation.
-X_train, X_remaining, y_train, y_remaining = train_test_split(
-    X, y, test_size=0.40, stratify=y, random_state=42
-)
-X_valid, X_test, y_valid, y_test = train_test_split(
-    X_remaining, y_remaining,
-    test_size=0.50, stratify=y_remaining, random_state=42
+from sklearn.metrics import (
+    precision_recall_curve,
+    precision_score,
+    recall_score
 )
 
-model = make_pipeline(
-    StandardScaler(),
-    LogisticRegression(class_weight="balanced", max_iter=2000)
-)
-model.fit(X_train, y_train)
+# Choose your desired fraud concentration among flagged applications.
+target_precision = 0.80
 
-# Select the highest validation threshold achieving at least 90% recall.
-# Recall = fraction of actual frauds caught.
 valid_probability = model.predict_proba(X_valid)[:, 1]
+
 precision, recall, thresholds = precision_recall_curve(
     y_valid, valid_probability
 )
 
-target_recall = 0.90
-eligible = np.flatnonzero(recall[:-1] >= target_recall)
-threshold = thresholds[eligible[-1]]
+# The last precision/recall pair has no corresponding threshold.
+eligible = np.flatnonzero(precision[:-1] >= target_precision)
 
-# Evaluate once on untouched test data.
+if len(eligible) == 0:
+    raise ValueError(
+        "No validation threshold achieves the requested precision. "
+        "Improve the model or lower target_precision."
+    )
+
+# Among qualifying thresholds, choose the one catching the most fraud.
+best = eligible[np.argmax(recall[eligible])]
+threshold = thresholds[best]
+threshold_100 = threshold * 100
+
+print(f"Risk-score threshold: {threshold_100:.2f}")
+print(f"Validation precision: {precision[best]:.1%}")
+print(f"Validation recall: {recall[best]:.1%}")
+
+# Freeze the threshold and evaluate on untouched test data.
 test_probability = model.predict_proba(X_test)[:, 1]
 test_prediction = (test_probability >= threshold).astype(int)
 
-print("Threshold:", threshold)
-print("Test recall:", recall_score(y_test, test_prediction))
-print("Test precision:", precision_score(
-    y_test, test_prediction, zero_division=0
-))
-print("Fraction flagged:", test_prediction.mean())
+print(f"Test precision: {precision_score(y_test, test_prediction, zero_division=0):.1%}")
+print(f"Test recall: {recall_score(y_test, test_prediction, zero_division=0):.1%}")
+print(f"Test applications flagged: {test_prediction.sum():,}")
 
-weights = pd.DataFrame({
-    "fact": X.columns,
-    "weight": model.named_steps["logisticregression"].coef_[0]
-}).sort_values("weight", ascending=False)
+# Score applications, retaining their identifiers.
+scored_applications = pdf[[ID]].copy()
+scored_applications["risk_score"] = (
+    model.predict_proba(X)[:, 1] * 100
+)
+scored_applications["flag_for_review"] = (
+    scored_applications["risk_score"] >= threshold_100
+)
 
-display(weights)
+display(scored_applications)
