@@ -1,81 +1,99 @@
 from pyspark.sql import functions as F
 
-# 1. Multiply new weights by 100 and truncate decimals.
-# Examples: 0.456 -> 45; -0.456 -> -45
-integer_weights = weights[["fact", "weight"]].copy()
-integer_weights["weight_int"] = (
-    integer_weights["weight"] * 100
-).astype("int64")
-
-weights_spark = spark.createDataFrame(
-    [
-        (str(fact), int(weight))
-        for fact, weight in integer_weights[
-            ["fact", "weight_int"]
-        ].itertuples(index=False, name=None)
-    ],
-    schema="fact string, weight_int long"
-)
-
-# 2. Count each fired fact once per application.
-fired_facts = long_df.select(ID, "fact").distinct()
-
-# Ensure every fired fact has a new weight.
-unmatched = fired_facts.join(weights_spark, on="fact", how="left_anti")
-
-if unmatched.limit(1).count():
-    unmatched.select("fact").distinct().show(truncate=False)
-    raise ValueError("Some fired facts have no corresponding new weight.")
-
-# 3. Sum NEW integer weights, without multiplying by original fact scores.
-application_totals = (
-    fired_facts
-    .join(weights_spark, on="fact", how="inner")
+binary_features = (
+    long_df
+    .select(ID, "fact")
+    .distinct()
+    .withColumn("fired", F.lit(1))
     .groupBy(ID)
-    .agg(F.sum("weight_int").alias("total_score"))
+    .pivot("fact")
+    .agg(F.max("fired"))
 )
+
+feature_columns = [c for c in binary_features.columns if c != ID]
 
 # Assumes one row per application in model_df.
-# Applications with no fired facts receive a score of zero.
-application_scores = (
+binary_df = (
     model_df.select(ID, TARGET)
-    .join(application_totals, on=ID, how="left")
-    .fillna(0, subset=["total_score"])
+    .join(binary_features, on=ID, how="left")
+    .fillna(0, subset=feature_columns)
 )
 
-# 4. Create buckets: 0–9, 10–19, 20–29, etc.
-bucketed = (
-    application_scores
-    .withColumn(
-        "bucket_start",
-        (F.floor(F.col("total_score") / F.lit(10)) * 10).cast("long")
-    )
-    .withColumn("bucket_end", F.col("bucket_start") + 9)
+display(binary_df)
+
+
+import numpy as np
+import pandas as pd
+
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import average_precision_score, roc_auc_score
+
+binary_pdf = binary_df.toPandas()
+
+X_binary = binary_pdf[feature_columns].astype("int8")
+y_binary = binary_pdf[TARGET].astype(int)
+
+X_train_b, X_test_b, y_train_b, y_test_b = train_test_split(
+    X_binary,
+    y_binary,
+    test_size=0.20,
+    stratify=y_binary,
+    random_state=42
 )
 
-# 5. Count genuine and fraud applications in each populated bucket.
-score_distribution = (
-    bucketed
-    .groupBy("bucket_start", "bucket_end")
-    .agg(
-        F.count("*").alias("total_applications"),
-        F.sum(
-            F.when(F.col(TARGET) == 0, 1).otherwise(0)
-        ).alias("genuine_applications"),
-        F.sum(
-            F.when(F.col(TARGET) == 1, 1).otherwise(0)
-        ).alias("fraud_applications")
-    )
-    .withColumn(
-        "fraud_percentage",
-        F.round(
-            100.0 * F.col("fraud_applications")
-            / F.col("total_applications"),
-            2
-        )
-    )
-    .orderBy("bucket_start")
+binary_model = LogisticRegression(
+    max_iter=2000,
+    random_state=42
+)
+binary_model.fit(X_train_b, y_train_b)
+
+test_probability = binary_model.predict_proba(X_test_b)[:, 1]
+
+print("Test average precision:",
+      average_precision_score(y_test_b, test_probability))
+print("Test ROC AUC:",
+      roc_auc_score(y_test_b, test_probability))
+
+
+binary_weights = pd.DataFrame({
+    "fact": X_binary.columns,
+    "weight": binary_model.coef_[0]
+})
+
+# Your requested integer version: multiply by 100, truncate decimals.
+binary_weights["weight_int"] = np.trunc(
+    binary_weights["weight"] * 100
+).astype("int64")
+
+binary_weights = binary_weights.sort_values(
+    "weight", ascending=False
 )
 
-display(application_scores)
-display(score_distribution)
+print("Intercept:", binary_model.intercept_[0])
+display(binary_weights)
+
+binary_application_scores = binary_pdf[[ID, TARGET]].copy()
+
+# Logistic regression score = intercept + sum of fired fact weights.
+binary_application_scores["model_score"] = (
+    binary_model.decision_function(X_binary)
+)
+
+# Estimated fraud probability expressed on a 0–100 scale.
+binary_application_scores["risk_score_100"] = (
+    binary_model.predict_proba(X_binary)[:, 1] * 100
+)
+
+# Your custom integer score = sum of integer weights of fired facts.
+integer_weights = np.trunc(
+    binary_model.coef_[0] * 100
+).astype("int64")
+
+binary_application_scores["total_integer_score"] = (
+    X_binary.to_numpy(dtype="int64") @ integer_weights
+)
+
+display(binary_application_scores)
+
+
