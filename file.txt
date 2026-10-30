@@ -1,215 +1,126 @@
+import re
 import numpy as np
 import pandas as pd
 
-from sklearn.preprocessing import MultiLabelBinarizer
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import average_precision_score, roc_auc_score
+# Uses `test` from the previous code, which already contains:
+# fraud, facts_fired, predicted_fraud_probability, proposed_decision
+
+CURRENT_REVIEW_MIN = 121
+CURRENT_DECLINE_MIN = 200
+
+comparison = test.copy()
 
 # --------------------------------------------------
-# 1. Validate and split chronologically
+# 1. Reconstruct current score from original fact weights
 # --------------------------------------------------
-data = df.copy()
-data["LOAD_DATE"] = pd.to_datetime(data["LOAD_DATE"], errors="raise")
-data["fraud"] = pd.to_numeric(data["fraud"], errors="raise")
+def extract_current_score(value):
+    if pd.isna(value) or not str(value).strip():
+        return 0.0
 
-if data["LOAD_DATE"].isna().any():
-    raise ValueError("LOAD_DATE contains missing values.")
+    weights = []
 
-if not data["fraud"].isin([0, 1]).all():
-    raise ValueError("fraud must contain only 0 and 1.")
+    for fact in str(value).split("|"):
+        fact = fact.strip()
+        if not fact:
+            continue
 
-data = data.sort_values("LOAD_DATE").reset_index(drop=True)
-
-# Keep every application from the same calendar day in the same split.
-data["_day"] = data["LOAD_DATE"].dt.normalize()
-dates = np.sort(data["_day"].unique())
-
-if len(dates) < 5:
-    raise ValueError("Need at least five distinct application dates.")
-
-train_end = dates[int(len(dates) * 0.60)]
-validation_end = dates[int(len(dates) * 0.80)]
-
-train = data[data["_day"] < train_end].copy()
-validation = data[
-    (data["_day"] >= train_end) &
-    (data["_day"] < validation_end)
-].copy()
-test = data[data["_day"] >= validation_end].copy()
-
-for name, part in [
-    ("Train", train),
-    ("Validation", validation),
-    ("Test", test),
-]:
-    if part["fraud"].nunique() != 2:
-        raise ValueError(f"{name} must contain fraud and legitimate cases.")
-
-    print(
-        f"{name}: {len(part):,} applications, "
-        f"fraud rate = {part['fraud'].mean():.2%}, "
-        f"dates = {part['_day'].min().date()} to "
-        f"{part['_day'].max().date()}"
-    )
-
-# --------------------------------------------------
-# 2. Learn fact vocabulary using training data only
-# --------------------------------------------------
-encoder = MultiLabelBinarizer(sparse_output=True)
-X_train = encoder.fit_transform(train["fact_list"])
-
-if X_train.shape[1] == 0:
-    raise ValueError("No facts found in training data.")
-
-known_facts = set(encoder.classes_)
-
-def encode_facts(part):
-    # New facts cannot receive a learned weight until retraining.
-    return encoder.transform(
-        part["fact_list"].apply(
-            lambda facts: [f for f in facts if f in known_facts]
+        match = re.search(
+            r"\(\s*([+-]?\d+(?:\.\d+)?)\s*\)\s*$",
+            fact,
         )
-    )
 
-X_validation = encode_facts(validation)
-X_test = encode_facts(test)
+        if match is None:
+            raise ValueError(
+                f"Cannot extract current weight from: {fact!r}"
+            )
 
-y_train = train["fraud"].astype(int).to_numpy()
-y_validation = validation["fraud"].astype(int).to_numpy()
-y_test = test["fraud"].astype(int).to_numpy()
+        weights.append(float(match.group(1)))
 
-# --------------------------------------------------
-# 3. Select regularization using validation performance
-# --------------------------------------------------
-candidates = []
+    return sum(weights)
 
-for C in [0.01, 0.1, 1.0, 10.0]:
-    candidate = LogisticRegression(
-        C=C,
-        penalty="l2",
-        solver="lbfgs",
-        max_iter=3000,
-    )
-    candidate.fit(X_train, y_train)
-
-    probability = candidate.predict_proba(X_validation)[:, 1]
-    ap = average_precision_score(y_validation, probability)
-
-    candidates.append((ap, C, candidate))
-
-best_ap, best_C, model = max(candidates, key=lambda item: item[0])
-
-print(f"\nSelected C: {best_C}")
-print(f"Validation average precision: {best_ap:.4f}")
-
-# --------------------------------------------------
-# 4. Export learned weights and training evidence
-# --------------------------------------------------
-fact_counts = np.asarray(X_train.sum(axis=0)).ravel()
-fraud_counts = np.asarray(X_train.T @ y_train).ravel()
-
-weights = pd.DataFrame({
-    "fact": encoder.classes_,
-    "learned_weight": model.coef_[0],
-    "training_applications": fact_counts.astype(int),
-    "training_fraud_applications": fraud_counts.astype(int),
-    "training_fraud_rate": fraud_counts / fact_counts,
-}).sort_values("learned_weight", ascending=False)
-
-print(f"\nModel intercept: {model.intercept_[0]:.6f}")
-print(weights.head(20).to_string(index=False))
-
-weights.to_csv("proposed_fact_weights.csv", index=False)
-
-# These weights are log-odds coefficients, not your current points scale.
-# Keep full precision when scoring.
-
-# --------------------------------------------------
-# 5. Set thresholds using validation data only
-# --------------------------------------------------
-TARGET_DECLINE_RATE = 0.05
-TARGET_REVIEW_RATE = 0.10
-
-if not (
-    0 < TARGET_DECLINE_RATE < 1
-    and 0 < TARGET_REVIEW_RATE
-    and TARGET_DECLINE_RATE + TARGET_REVIEW_RATE < 1
-):
-    raise ValueError("Review and decline rates must sum to less than 1.")
-
-validation_probability = model.predict_proba(X_validation)[:, 1]
-
-decline_threshold = np.quantile(
-    validation_probability,
-    1 - TARGET_DECLINE_RATE,
-)
-review_threshold = np.quantile(
-    validation_probability,
-    1 - TARGET_DECLINE_RATE - TARGET_REVIEW_RATE,
+comparison["current_score"] = comparison["facts_fired"].apply(
+    extract_current_score
 )
 
-print(f"\nReview probability threshold: {review_threshold:.6f}")
-print(f"Decline probability threshold: {decline_threshold:.6f}")
-
-# --------------------------------------------------
-# 6. Evaluate once on the later test period
-# --------------------------------------------------
-test_probability = model.predict_proba(X_test)[:, 1]
-
-test["predicted_fraud_probability"] = test_probability
-test["proposed_decision"] = np.select(
+comparison["current_decision"] = np.select(
     [
-        test_probability >= decline_threshold,
-        test_probability >= review_threshold,
+        comparison["current_score"] >= CURRENT_DECLINE_MIN,
+        comparison["current_score"] >= CURRENT_REVIEW_MIN,
     ],
     ["decline", "review"],
     default="approve",
 )
 
-summary = (
-    test.groupby("proposed_decision")
-    .agg(
-        applications=("fraud", "size"),
-        fraud_applications=("fraud", "sum"),
-    )
-    .reindex(["approve", "review", "decline"], fill_value=0)
+# --------------------------------------------------
+# 2. Calculate comparable performance metrics
+# --------------------------------------------------
+def evaluate_decisions(frame, decision_column):
+    fraud = frame["fraud"].eq(1)
+    legitimate = frame["fraud"].eq(0)
+
+    approved = frame[decision_column].eq("approve")
+    reviewed = frame[decision_column].eq("review")
+    declined = frame[decision_column].eq("decline")
+
+    def rate(numerator, denominator):
+        return numerator / denominator if denominator else np.nan
+
+    return pd.Series({
+        "Applications": len(frame),
+        "Approval rate": approved.mean(),
+        "Review rate": reviewed.mean(),
+        "Decline rate": declined.mean(),
+        "Fraud declined": int((fraud & declined).sum()),
+        "Fraud sent to review": int((fraud & reviewed).sum()),
+        "Fraud approved": int((fraud & approved).sum()),
+        "Fraud decline recall": rate(
+            (fraud & declined).sum(), fraud.sum()
+        ),
+        "Fraud review-or-decline recall": rate(
+            (fraud & (reviewed | declined)).sum(), fraud.sum()
+        ),
+        "Legitimate decline rate": rate(
+            (legitimate & declined).sum(), legitimate.sum()
+        ),
+        "Legitimate review rate": rate(
+            (legitimate & reviewed).sum(), legitimate.sum()
+        ),
+        "Fraud share of declines": rate(
+            (fraud & declined).sum(), declined.sum()
+        ),
+        "Fraud share of reviews": rate(
+            (fraud & reviewed).sum(), reviewed.sum()
+        ),
+    })
+
+performance = pd.DataFrame({
+    "Current": evaluate_decisions(comparison, "current_decision"),
+    "Proposed": evaluate_decisions(comparison, "proposed_decision"),
+})
+
+performance["Change"] = performance["Proposed"] - performance["Current"]
+
+print("\nPerformance comparison:")
+print(performance.round(4).to_string())
+
+# --------------------------------------------------
+# 3. Show how application decisions change
+# --------------------------------------------------
+decision_changes = pd.crosstab(
+    comparison["current_decision"],
+    comparison["proposed_decision"],
+).reindex(
+    index=["approve", "review", "decline"],
+    columns=["approve", "review", "decline"],
+    fill_value=0,
 )
 
-summary["legitimate_applications"] = (
-    summary["applications"] - summary["fraud_applications"]
-)
-summary["application_share"] = (
-    summary["applications"] / len(test)
-)
-summary["fraud_rate"] = (
-    summary["fraud_applications"]
-    / summary["applications"].replace(0, np.nan)
-)
+print("\nDecision changes: rows = current, columns = proposed")
+print(decision_changes.to_string())
 
-total_fraud = int(y_test.sum())
-total_legitimate = int((y_test == 0).sum())
-
-fraud_declined = summary.loc["decline", "fraud_applications"]
-fraud_reviewed = summary.loc["review", "fraud_applications"]
-legitimate_declined = summary.loc["decline", "legitimate_applications"]
-
-print("\nTest results:")
-print(summary.to_string())
-
-print(f"\nROC AUC: {roc_auc_score(y_test, test_probability):.4f}")
-print(
-    "Average precision: "
-    f"{average_precision_score(y_test, test_probability):.4f}"
-)
-print(f"Fraud routed to decline: {fraud_declined / total_fraud:.2%}")
-print(
-    "Fraud routed to review or decline: "
-    f"{(fraud_declined + fraud_reviewed) / total_fraud:.2%}"
-)
-print(
-    "Legitimate applications declined: "
-    f"{legitimate_declined / total_legitimate:.2%}"
-)
-
-test.to_csv("test_applications_with_proposed_scores.csv", index=False)
-summary.to_csv("test_decision_summary.csv")
+# --------------------------------------------------
+# 4. Export results
+# --------------------------------------------------
+performance.to_csv("current_vs_proposed_performance.csv")
+decision_changes.to_csv("decision_changes.csv")
+comparison.to_csv("application_score_comparison.csv", index=False)
