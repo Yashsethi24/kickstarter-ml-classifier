@@ -1,126 +1,24 @@
-import re
-import numpy as np
-import pandas as pd
+Hi Team,
 
-# Uses `test` from the previous code, which already contains:
-# fraud, facts_fired, predicted_fraud_probability, proposed_decision
+We have revised our TransUnion analysis using the updated fraud identification logic. Previously, we considered inactive applications, credit revoked, fraud marked, blocked applications, applications with monetary transactions, delinquency, confirmed fraud, and suspected fraud. The revised logic is now limited to credit revoked, delinquency, confirmed fraud, and suspected fraud.
 
-CURRENT_REVIEW_MIN = 121
-CURRENT_DECLINE_MIN = 200
+With this change, the False Positive Ratio (FPR) has increased from 0.7 to 1.0, while the overall impact remains largely consistent with our earlier assessment.
 
-comparison = test.copy()
+Below is a summary of the two options:
 
-# --------------------------------------------------
-# 1. Reconstruct current score from original fact weights
-# --------------------------------------------------
-def extract_current_score(value):
-    if pd.isna(value) or not str(value).strip():
-        return 0.0
+Metric| Option 1| Option 2
+Monthly Declines| 570| 137
+Daily Declines| ~19| ~5
+Monthly Fraud Savings| $533K| $36K
+FPR| 1.0| —
 
-    weights = []
+For Option 1, the decline volume remains consistent with our previously finalized approach, while the estimated monthly fraud savings have decreased slightly from $572K to $533K.
 
-    for fact in str(value).split("|"):
-        fact = fact.strip()
-        if not fact:
-            continue
+I would appreciate your guidance on which option we should proceed with, considering the trade-off between fraud savings and customer impact.
 
-        match = re.search(
-            r"\(\s*([+-]?\d+(?:\.\d+)?)\s*\)\s*$",
-            fact,
-        )
+We are also scheduled to meet with Debby from TransUnion on Monday to finalize the approach, with the production changes planned for Tuesday.
 
-        if match is None:
-            raise ValueError(
-                f"Cannot extract current weight from: {fact!r}"
-            )
+I have included the updated analysis below for your reference.
 
-        weights.append(float(match.group(1)))
-
-    return sum(weights)
-
-comparison["current_score"] = comparison["facts_fired"].apply(
-    extract_current_score
-)
-
-comparison["current_decision"] = np.select(
-    [
-        comparison["current_score"] >= CURRENT_DECLINE_MIN,
-        comparison["current_score"] >= CURRENT_REVIEW_MIN,
-    ],
-    ["decline", "review"],
-    default="approve",
-)
-
-# --------------------------------------------------
-# 2. Calculate comparable performance metrics
-# --------------------------------------------------
-def evaluate_decisions(frame, decision_column):
-    fraud = frame["fraud"].eq(1)
-    legitimate = frame["fraud"].eq(0)
-
-    approved = frame[decision_column].eq("approve")
-    reviewed = frame[decision_column].eq("review")
-    declined = frame[decision_column].eq("decline")
-
-    def rate(numerator, denominator):
-        return numerator / denominator if denominator else np.nan
-
-    return pd.Series({
-        "Applications": len(frame),
-        "Approval rate": approved.mean(),
-        "Review rate": reviewed.mean(),
-        "Decline rate": declined.mean(),
-        "Fraud declined": int((fraud & declined).sum()),
-        "Fraud sent to review": int((fraud & reviewed).sum()),
-        "Fraud approved": int((fraud & approved).sum()),
-        "Fraud decline recall": rate(
-            (fraud & declined).sum(), fraud.sum()
-        ),
-        "Fraud review-or-decline recall": rate(
-            (fraud & (reviewed | declined)).sum(), fraud.sum()
-        ),
-        "Legitimate decline rate": rate(
-            (legitimate & declined).sum(), legitimate.sum()
-        ),
-        "Legitimate review rate": rate(
-            (legitimate & reviewed).sum(), legitimate.sum()
-        ),
-        "Fraud share of declines": rate(
-            (fraud & declined).sum(), declined.sum()
-        ),
-        "Fraud share of reviews": rate(
-            (fraud & reviewed).sum(), reviewed.sum()
-        ),
-    })
-
-performance = pd.DataFrame({
-    "Current": evaluate_decisions(comparison, "current_decision"),
-    "Proposed": evaluate_decisions(comparison, "proposed_decision"),
-})
-
-performance["Change"] = performance["Proposed"] - performance["Current"]
-
-print("\nPerformance comparison:")
-print(performance.round(4).to_string())
-
-# --------------------------------------------------
-# 3. Show how application decisions change
-# --------------------------------------------------
-decision_changes = pd.crosstab(
-    comparison["current_decision"],
-    comparison["proposed_decision"],
-).reindex(
-    index=["approve", "review", "decline"],
-    columns=["approve", "review", "decline"],
-    fill_value=0,
-)
-
-print("\nDecision changes: rows = current, columns = proposed")
-print(decision_changes.to_string())
-
-# --------------------------------------------------
-# 4. Export results
-# --------------------------------------------------
-performance.to_csv("current_vs_proposed_performance.csv")
-decision_changes.to_csv("decision_changes.csv")
-comparison.to_csv("application_score_comparison.csv", index=False)
+Thanks,
+Yash
