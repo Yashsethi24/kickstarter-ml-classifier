@@ -1,10 +1,29 @@
-Hi Debby,
+import re
+import pandas as pd
+from sklearn.preprocessing import MultiLabelBinarizer
 
-Hope you had a great time off!
+def parse_facts(value):
+    if pd.isna(value) or not str(value).strip():
+        return []
 
-We have completed our analysis and would like to make adjustments to some of the fact weights in the production environment. We would appreciate your assistance with implementing these changes.
+    facts = []
+    for item in str(value).split("|"):
+        # Remove trailing current weight, including negative weights.
+        fact = re.sub(r"\s*\(-?\d+(?:\.\d+)?\)\s*$", "", item.strip())
 
-Could you please share your availability for Tuesday morning? I'll schedule some time accordingly.
+        # Remove trailing risk annotation.
+        fact = re.sub(
+            r"\s*\[(?:High|Medium|Low)\]\s*$",
+            "",
+            fact,
+            flags=re.IGNORECASE,
+        ).strip()
 
-Regards,
-Yash
+        if fact:
+            facts.append(fact)
+
+    return sorted(set(facts))
+
+df = model_df.copy()
+df["LOAD_DATE"] = pd.to_datetime(df["LOAD_DATE"], errors="raise")
+df["fact_list"] = df["facts_fired"].apply(parse_facts)
