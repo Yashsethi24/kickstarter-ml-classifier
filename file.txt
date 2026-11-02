@@ -1,20 +1,40 @@
 import pandas as pd
+import numpy as np
+import re
 
-# Convert score to numeric
+# 1. Identify applications with at least one risky fact fired
+pattern = '|'.join(re.escape(fact) for fact in risky_facts)
+
+fact_df['risky_fact_flag'] = (
+    fact_df['facts_fired']
+    .fillna('')
+    .str.contains(pattern, regex=True, case=False)
+    .astype(int)
+)
+
+# 2. Create score groups
 fact_df['score'] = pd.to_numeric(fact_df['score'], errors='coerce')
 
-# Create score groups
 fact_df['score_group'] = pd.cut(
     fact_df['score'],
-    bins=[-float('inf'), 190, 200, float('inf')],
+    bins=[-0.001, 190, 200, float('inf')],
     labels=['0-190', '191-200', '200+']
 )
 
-# Count unique applications per group
+# 3. Application-level report
+application_report = fact_df[
+    ['application_id', 'score', 'score_group',
+     'risky_fact_flag', 'facts_fired']
+].copy()
+
+display(application_report)
+
+# 4. Grouped summary
 summary = (
-    fact_df.groupby('score_group', observed=True)['application_id']
-    .nunique()
-    .reset_index(name='unique_applications')
+    application_report
+    .groupby(['risky_fact_flag', 'score_group'], observed=False)
+    .agg(unique_applications=('application_id', 'nunique'))
+    .reset_index()
 )
 
 display(summary)
