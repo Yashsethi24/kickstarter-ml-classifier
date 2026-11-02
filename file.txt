@@ -1,19 +1,14 @@
 from datetime import datetime, timedelta
-from dateutil.relativedelta import relativedelta
 
-# First day of month, 3 months before MTD start date
-start_date_3m = (
-    datetime.strptime(mtd_start_date, "%Y-%m-%d")
-    - relativedelta(months=3)
-).strftime("%Y-%m-%d")
+ref_date = datetime.strptime(end_date, "%Y-%m-%d")
 
-# Last Friday relative to end_date (inclusive if Friday)
-last_friday = (
-    datetime.strptime(end_date, "%Y-%m-%d")
-    - timedelta(days=(datetime.strptime(end_date, "%Y-%m-%d").weekday() - 4) % 7)
-).strftime("%Y-%m-%d")
+last_friday = ref_date - timedelta(days=(ref_date.weekday() - 4) % 7)
+last_to_last_friday = last_friday - timedelta(days=7)
 
-print(start_date_3m, last_friday)
+week_start = last_to_last_friday.strftime("%Y%m%d")
+week_end = last_friday.strftime("%Y%m%d")
+
+print(week_start, week_end)
 
 
 query = f"""
@@ -21,8 +16,8 @@ SELECT
     date_format(to_date(application_date, 'yyyyMMdd'), 'yyyyMM') AS year_mon,
     COUNT(DISTINCT Application_Number) AS num_apps
 FROM final_data
-WHERE application_date >= '{start_date_3m.replace("-", "")}'
-  AND application_date <= '{last_friday.replace("-", "")}'
+WHERE application_date >= '{week_start}'
+  AND application_date <= '{week_end}'
 GROUP BY date_format(to_date(application_date, 'yyyyMMdd'), 'yyyyMM')
 """
 
