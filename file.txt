@@ -1,12 +1,16 @@
-Hello Debby,
+Hi Alex,
 
-Please find attached the analysis presented during today's meeting.
+We had a discussion with Debby from the TU team regarding the proposed fact weight changes in production.
 
-As discussed, you can review the proposed changes with Baggy tomorrow morning, while I coordinate the necessary approvals from the TD side.
+Debby recommended the following approach:
 
-Subject to everyone's agreement and the required approvals, we can proceed with implementing the changes in the production environment tomorrow at 11:00 AM.
+- Highly risky facts: Increase the scores significantly (1,000 or above).
+- Moderately risky facts: Increase the scores to 500 or above.
+- Customer Email Age Low: Rather than configuring this fact for a direct decline, slightly increase its weight so that the cumulative score routes the application to either a review or decline queue.
 
-I'll send out the meeting invitation shortly.
+We can discuss the proposed approach in more detail during our meeting tomorrow. Debby will also review the recommendations with her team to confirm the implementation feasibility.
+
+Subject to everyone's agreement, we can proceed with implementing the changes in production during our scheduled meeting at 11:00 AM tomorrow.
 
 Regards,
-Yash Sethi
+Yash
