@@ -1,26 +1,12 @@
-import pandas as pd
+Hi Alex,
 
-# Extract fact names and corresponding scores
-new_df = (
-    fact_df['facts_fired']
-    .fillna('')
-    .str.extractall(
-        r'([^|]+?)\s*\[[^\]]+\]\s*\((-?\d+(?:\.\d+)?)\)'
-    )
-    .reset_index()
-)
+Of the approximately 570 applications identified per month:
 
-# Rename columns
-new_df = new_df.rename(columns={
-    0: 'fact',
-    1: 'score'
-})
+- ~9 applications/month, with a combined balance of $6M, were referred for TU review and subsequently approved, as they reached FIQM.
+- None of these applications were declined in OM5.
+- ~282 applications/month, with a combined balance of $117M, were blocked in FIQM.
 
-# Clean and convert
-new_df['fact'] = new_df['fact'].str.strip()
-new_df['score'] = pd.to_numeric(new_df['score'])
+Regarding Step 2, I agree with your suggestion. I will conduct further analysis to identify opportunities to reduce the weights of facts with high FPR while maintaining fraud detection effectiveness.
 
-# Remove unnecessary columns
-new_df = new_df[['fact', 'score']]
-
-display(new_df)
+Regards,
+Yash
