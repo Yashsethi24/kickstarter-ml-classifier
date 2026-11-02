@@ -1,12 +1,47 @@
-Hi Alex,
 
-Of the approximately 570 applications identified per month:
+import pandas as pd
 
-- ~9 applications/month, with a combined balance of $6M, were referred for TU review and subsequently approved, as they reached FIQM.
-- None of these applications were declined in OM5.
-- ~282 applications/month, with a combined balance of $117M, were blocked in FIQM.
+# Extract fact names and scores using new_df logic
+extracted = (
+    final_df['facts_fired']
+    .fillna('')
+    .str.extractall(
+        r'([^|]+?)\s*\[[^\]]+\]\s*\((-?\d+(?:\.\d+)?)\)'
+    )
+    .reset_index()
+)
 
-Regarding Step 2, I agree with your suggestion. I will conduct further analysis to identify opportunities to reduce the weights of facts with high FPR while maintaining fraud detection effectiveness.
+# Rename columns
+extracted = extracted.rename(columns={
+    'level_0': 'row_id',
+    0: 'fact',
+    1: 'score'
+})
 
-Regards,
-Yash
+# Clean and convert
+extracted['fact'] = extracted['fact'].str.strip()
+extracted['score'] = pd.to_numeric(extracted['score'])
+
+# Create individual fact columns
+fact_columns = extracted.pivot_table(
+    index='row_id',
+    columns='fact',
+    values='score',
+    aggfunc='last'
+)
+
+# Align with original DataFrame
+fact_columns = fact_columns.reindex(range(len(final_df))).fillna(0)
+
+# Preserve original rows and columns
+final_df = pd.concat(
+    [
+        final_df.reset_index(drop=True),
+        fact_columns.reset_index(drop=True)
+    ],
+    axis=1
+)
+
+final_df.columns.name = None
+
+display(final_df)
