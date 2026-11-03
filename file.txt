@@ -1,7 +1,26 @@
-Good morning, Marie!
+Hi Alex,
 
-I wanted to give you a heads-up that we are implementing some changes in TransUnion today, which are expected to increase the alert volume received by your team by approximately 12 additional alerts per day.
+I wanted to confirm that the updated fact weights have been successfully deployed to the TransUnion production environment.
 
-Could you please monitor the volumes and confirm whether you observe the expected increase? It would also be helpful if you could let us know if there is no noticeable change.
+As part of the deployment validation, Debbie has confirmed that the updated weights are reflected in production. She has also observed applications triggering the Email Age Low fact being routed to the Medium Risk (Review) queue, as expected.
 
-Thank you!
+Post-Deployment Monitoring Plan:
+
+We have aligned with TransUnion on the following monitoring approach:
+
+- Daily monitoring for the first week, with TransUnion sharing application-level data each day.
+- Weekly monitoring thereafter to track performance and identify any anomalies.
+
+The monitoring will focus on the following key metrics:
+
+- Application volume
+- Alert volume
+- False Positive Rate (FPR)
+- Number of declines in TransUnion
+
+Starting tomorrow, we will initiate an email thread to share the daily post-deployment monitoring results, including comparisons against pre-deployment performance to assess the impact of the updated fact weights.
+
+Please let me know if you have any questions.
+
+Thanks,
+Yash
