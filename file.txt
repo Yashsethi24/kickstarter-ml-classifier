@@ -1,24 +1,7 @@
-Hi Team,
+Good morning, Marie!
 
-We are scheduled to implement the proposed Amazon TU strategy changes in production during our 11:00 AM meeting today.
+I wanted to give you a heads-up that we are implementing some changes in TransUnion today, which are expected to increase the alert volume received by your team by approximately 12 additional alerts per day.
 
-Current Strategy Performance (Based on Updated Fraud Logic):
+Could you please monitor the volumes and confirm whether you observe the expected increase? It would also be helpful if you could let us know if there is no noticeable change.
 
-- Applications impacted: ~570 per month (~19 per day)
-- False Positive Ratio (FPR): 1.0
-- Estimated fraud savings: ~$533K per month
-
-Proposed Changes:
-
-Following our discussion with Debby from the TU team, we will be updating the fact weights in production as follows:
-
-- Highly risky facts: Increase scores to 1,000 or above to prioritize high-risk applications.
-- Moderately risky facts: Increase scores to 500 or above to strengthen risk identification.
-- Customer Email Age Low: Apply a moderate weight increase instead of a direct decline, allowing the cumulative application score to determine whether the application is routed to a review or decline queue.
-
-These changes are intended to strengthen fraud detection while ensuring that applications are appropriately routed based on their overall risk scores.
-
-We will review the final configuration during the 11:00 AM meeting today and proceed with the production implementation, subject to final agreement.
-
-Regards,
-Yash
+Thank you!
