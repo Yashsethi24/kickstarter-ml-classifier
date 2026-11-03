@@ -1,24 +1,13 @@
-Hi Alex,
+Hi Team,
 
-I wanted to confirm that the updated fact weights have been successfully deployed to the TransUnion production environment.
+Please find below the initial post-deployment monitoring (PDM) results.
 
-As part of the deployment validation, Debbie has confirmed that the updated weights are reflected in production. She has also observed applications triggering the Email Age Low fact being routed to the Medium Risk (Review) queue, as expected.
+The deployment was successfully completed at 11:45 a.m. today. Based on applications received between 11:45 a.m. and 1:15 p.m., we observed the following incremental impact from the updated fact weights:
 
-Post-Deployment Monitoring Plan:
+- Incremental Declines: 2 applications
+- Incremental Review Queue Referrals: 6 applications
 
-We have aligned with TransUnion on the following monitoring approach:
-
-- Daily monitoring for the first week, with TransUnion sharing application-level data each day.
-- Weekly monitoring thereafter to track performance and identify any anomalies.
-
-The monitoring will focus on the following key metrics:
-
-- Application volume
-- Alert volume
-- False Positive Rate (FPR)
-- Number of declines in TransUnion
-
-Starting tomorrow, we will initiate an email thread to share the daily post-deployment monitoring results, including comparisons against pre-deployment performance to assess the impact of the updated fact weights.
+The next round of post-deployment monitoring will be conducted at 5:00 p.m. today to assess the continued impact of the changes and identify any anomalies.
 
 Please let me know if you have any questions.
 
