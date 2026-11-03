@@ -1,82 +1,24 @@
-E611230485
-E611230697
-E611230704
-E611230754
-E611230373
-E611231080
-E611230356
-E611230425
-E611230389
-E611231029
-E611232135
-E611231999
-E611232031
-E611231657
-E611232136
-E611231638
-E611231588
-E611231920
-E611231821
-E611232115
-E611229514
-E611230158
-E611231273
-E611230047
-E611230991
-E611231278
-E611229632
-E611231225
-E611230999
-E611231196
-E611230905
-E611229342
-E611230722
-E611231132
-E611229374
-E611230258
-E611230813
-E611230169
-E611230235
-E611230262
-E611231085
-E611230826
-E611231965
-E611232041
-E611231892
-E611232092
-E611232058
-E611231735
-E611231934
-E611232085
-E611231983
-E611232042
-E611232097
-E611232039
-E611231022
-E611231236
-E611230726
-E611229584
-E611230890
-E611230061
-E611229816
-E611229290
-E611230981
-E611229484
-E611229832
-E611229571
-E611230996
-E611229831
-E611229795
-E611229652
-E611229428
-E611229773
-E611229452
-E611231250
-E611230056
-E611230054
-E611229371
-E611229948
-E611231011
-E611229376
-E611229976
-E611230968
+Hi Team,
+
+We are scheduled to implement the proposed Amazon TU strategy changes in production during our 11:00 AM meeting today.
+
+Current Strategy Performance (Based on Updated Fraud Logic):
+
+- Applications impacted: ~570 per month (~19 per day)
+- False Positive Ratio (FPR): 1.0
+- Estimated fraud savings: ~$533K per month
+
+Proposed Changes:
+
+Following our discussion with Debby from the TU team, we will be updating the fact weights in production as follows:
+
+- Highly risky facts: Increase scores to 1,000 or above to prioritize high-risk applications.
+- Moderately risky facts: Increase scores to 500 or above to strengthen risk identification.
+- Customer Email Age Low: Apply a moderate weight increase instead of a direct decline, allowing the cumulative application score to determine whether the application is routed to a review or decline queue.
+
+These changes are intended to strengthen fraud detection while ensuring that applications are appropriately routed based on their overall risk scores.
+
+We will review the final configuration during the 11:00 AM meeting today and proceed with the production implementation, subject to final agreement.
+
+Regards,
+Yash
