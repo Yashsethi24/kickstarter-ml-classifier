@@ -31,3 +31,10 @@ mtd_1_start_date = mtd_1_start_date.strftime("%Y%m%d")
 mtd_1_end_date = mtd_1_end_date.strftime("%Y%m%d")
 
 print(last_friday, last_to_last_friday, mtd_start_date, mtd_1_start_date, mtd_1_end_date)
+
+last_friday = last_friday.strftime("%Y-%m-%d")
+last_to_last_friday = last_to_last_friday.strftime("%Y-%m-%d")
+mtd_start_date = mtd_start_date.strftime("%Y-%m-%d")
+mtd_1_start_date = mtd_1_start_date.strftime("%Y-%m-%d")
+mtd_1_end_date = mtd_1_end_date.strftime("%Y-%m-%d")
+mtd_3_start_date = mtd_3_start_date.strftime("%Y-%m-%d")
