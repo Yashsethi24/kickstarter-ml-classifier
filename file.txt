@@ -19,6 +19,10 @@ mtd_1_start_date = (end_date - relativedelta(months=1)).replace(day=1)
 # 5. Same date last month (based on last Friday)
 mtd_1_end_date = last_friday - relativedelta(months=1)
 
+# 6. First day of the month, 3 months before today
+mtd_3_start_date = (
+    end_date.replace(day=1) - relativedelta(months=3)
+).strftime("%Y%m%d")
 # Convert all dates to yyyyMMdd format
 last_friday = last_friday.strftime("%Y%m%d")
 last_to_last_friday = last_to_last_friday.strftime("%Y%m%d")
