@@ -1,15 +1,29 @@
-Hi Team,
+from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
 
-Please find below the initial post-deployment monitoring (PDM) results.
+# Input: Today's date
+end_date = datetime.today().date()
 
-The deployment was successfully completed at 11:45 a.m. today. Based on applications received between 11:45 a.m. and 1:15 p.m., we observed the following incremental impact from the updated fact weights:
+# 1. Last Friday
+last_friday = end_date - timedelta(days=(end_date.weekday() - 4) % 7)
 
-- Incremental Declines: 2 applications
-- Incremental Review Queue Referrals: 6 applications
+# 2. Last to last Friday
+last_to_last_friday = last_friday - timedelta(days=7)
 
-The next round of post-deployment monitoring will be conducted at 5:00 p.m. today to assess the continued impact of the changes and identify any anomalies.
+# 3. This month start date
+mtd_start_date = end_date.replace(day=1)
 
-Please let me know if you have any questions.
+# 4. Last month start date
+mtd_1_start_date = (end_date - relativedelta(months=1)).replace(day=1)
 
-Thanks,
-Yash
+# 5. Same date last month (based on last Friday)
+mtd_1_end_date = last_friday - relativedelta(months=1)
+
+# Convert all dates to yyyyMMdd format
+last_friday = last_friday.strftime("%Y%m%d")
+last_to_last_friday = last_to_last_friday.strftime("%Y%m%d")
+mtd_start_date = mtd_start_date.strftime("%Y%m%d")
+mtd_1_start_date = mtd_1_start_date.strftime("%Y%m%d")
+mtd_1_end_date = mtd_1_end_date.strftime("%Y%m%d")
+
+print(last_friday, last_to_last_friday, mtd_start_date, mtd_1_start_date, mtd_1_end_date)
