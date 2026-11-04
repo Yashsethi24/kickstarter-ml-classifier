@@ -1,36 +1,44 @@
-# Remove hyphens from phone numbers; leave nulls blank
-phone = (
-    df["Guaranter Phone"]
-    .astype("string")
-    .str.replace("-", "", regex=False)
-    .str.strip()
-    .fillna("")
+import re
+
+def split_address(value):
+    if pd.isna(value) or not str(value).strip():
+        return "", ""
+
+    words = str(value).split()
+    number_seen = False
+
+    for i, word in enumerate(words):
+        letter_count = sum(char.isalpha() for char in word)
+
+        if number_seen and letter_count > 4:
+            return " ".join(words[:i]), " ".join(words[i:])
+
+        if re.search(r"\d", word):
+            number_seen = True
+
+    # No qualifying street word found
+    return " ".join(words), ""
+
+
+# Split billing street into civic number and street
+address_parts = df["Guaranter BillingStreet"].apply(split_address)
+
+output_df["Address_Civic_Number"] = address_parts.str[0]
+output_df["Address_Street"] = address_parts.str[1]
+
+# City and province
+output_df["Address_City"] = (
+    df["Guaranter BillingCity"].astype("string").fillna("")
 )
 
-# Copy the same phone into all three destination columns
-for column in [
-    "Residential_Phone_Number",
-    "Business_Telephone",
-    "Mobile_Telephone",
-]:
-    output_df[column] = phone
-
-# Email address in uppercase; leave nulls blank
-output_df["Email_Address"] = (
-    df["Guaranter PersonEmail"]
-    .astype("string")
-    .str.strip()
-    .str.upper()
-    .fillna("")
+output_df["Address_Province"] = (
+    df["Guaranter BillingState"].astype("string").fillna("")
 )
 
-# Birth date as YYYYMMDD; leave nulls or invalid dates blank
-output_df["Primary_Date_of_Birth"] = (
-    pd.to_datetime(
-        df["Guaranter Birthdate"],
-        format="%m/%d/%Y",
-        errors="coerce",
-    )
-    .dt.strftime("%Y%m%d")
+# Postal code: remove all whitespace
+output_df["Address_Postal_Code"] = (
+    df["Guaranter PostalCode"]
+    .astype("string")
+    .str.replace(r"\s+", "", regex=True)
     .fillna("")
 )
