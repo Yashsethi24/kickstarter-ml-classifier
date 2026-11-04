@@ -1,33 +1,10 @@
-import pandas as pd
-import random
-from datetime import date
+# Split guarantor name into words
+names = df["Guarantor Name"].astype("string").str.split()
 
-# Create one output row per source row, with all template columns
-output_df = pd.DataFrame(index=df.index, columns=format_df.columns)
+output_df["Primary_First_Name"] = names.str[0]
 
-# Application number: fixed prefix + unique random suffix
-suffix_length = 11
-suffixes = random.sample(range(10 ** suffix_length), len(df))
+# Only assign family name when there are at least two words
+output_df["Primary_Family_Name"] = names.str[-1].where(names.str.len() > 1)
 
-output_df["Application_Number"] = [
-    f"12490{suffix:0{suffix_length}d}"
-    for suffix in suffixes
-]
-
-# Same date and fixed values for every application
-output_df["Application_Date"] = date.today().strftime("%Y%m%d")
-output_df["Application_Type"] = "A"
-output_df["Account_Ownership_Type"] = "I"
-
-# Use the exact column names from your DataFrames here
-source_name_col = "Guarantor Name"
-first_name_col = "Primary_First_Name"
-family_name_col = "Primary_Family_Name"
-
-# Split on whitespace: first word = first name; remainder = family name
-names = df[source_name_col].astype("string").str.split()
-
-output_df[first_name_col] = names.str[0]
-output_df[family_name_col] = names.str[1:].str.join(" ")
-
-display(output_df)
+# Everything between the first and last words
+output_df["Primary_Middle_Name"] = names.str[1:-1].str.join(" ")
