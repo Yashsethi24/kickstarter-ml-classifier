@@ -2,3 +2,7 @@ fact_df['transaction_timestamp'] = (
     pd.to_datetime(fact_df['transaction_timestamp'], utc=True)
     - pd.Timedelta(hours=17)
 )
+filtered_df = fact_df[
+    fact_df['transaction_timestamp'] >
+    pd.Timestamp('2026-11-04 04:45:00', tz='UTC')
+]
