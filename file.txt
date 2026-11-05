@@ -1,44 +1,85 @@
-import re
-
-def split_address(value):
-    if pd.isna(value) or not str(value).strip():
-        return "", ""
-
-    words = str(value).split()
-    number_seen = False
-
-    for i, word in enumerate(words):
-        letter_count = sum(char.isalpha() for char in word)
-
-        if number_seen and letter_count > 4:
-            return " ".join(words[:i]), " ".join(words[i:])
-
-        if re.search(r"\d", word):
-            number_seen = True
-
-    # No qualifying street word found
-    return " ".join(words), ""
-
-
-# Split billing street into civic number and street
-address_parts = df["Guaranter BillingStreet"].apply(split_address)
-
-output_df["Address_Civic_Number"] = address_parts.str[0]
-output_df["Address_Street"] = address_parts.str[1]
-
-# City and province
-output_df["Address_City"] = (
-    df["Guaranter BillingCity"].astype("string").fillna("")
-)
-
-output_df["Address_Province"] = (
-    df["Guaranter BillingState"].astype("string").fillna("")
-)
-
-# Postal code: remove all whitespace
-output_df["Address_Postal_Code"] = (
-    df["Guaranter PostalCode"]
-    .astype("string")
-    .str.replace(r"\s+", "", regex=True)
-    .fillna("")
-)
+E611233651
+E611233143
+E611232957
+E611232775
+E611233261
+E611232589
+E611232544
+E611234452
+E611234581
+E611234019
+E611234187
+E611234418
+E611234007
+E611234562
+E611234325
+E611234298
+E611234387
+E611234098
+E611234349
+E611234540
+E611234599
+E611234600
+E611234519
+E611232908
+E611232191
+E611233491
+E611233107
+E611232895
+E611232790
+E611233224
+E611233754
+E611233826
+E611233655
+E611233112
+E611233515
+E611233478
+E611233646
+E611233756
+E611233621
+E611233398
+E611233157
+E611232696
+E611233733
+E611232901
+E611232367
+E611232822
+E611233582
+E611233225
+E611232204
+E611233865
+E611233397
+E611233192
+E611233167
+E611233703
+E611233461
+E611232258
+E611233046
+E611232376
+E611233903
+E611233907
+E611234607
+E611234554
+E611234509
+E611234493
+E611234477
+E611234407
+E611232800
+E611234499
+E611234489
+E611234472
+E611234419
+E611234378
+E611234373
+E611234268
+E611234141
+E611234106
+E611233941
+E611233858
+E611233819
+E611233790
+E611233616
+E611233501
+E611233469
+E611233331
+E611233244
