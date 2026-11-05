@@ -1,17 +1,4 @@
-fraud_mask = pd.to_numeric(df["fraud"], errors="coerce").eq(1)
-
-df["fraud_application"] = df[app_col].where(fraud_mask)
-df["fraud_current_balance"] = df[balance_col].where(fraud_mask, 0)
-
-performance = (
-    df.groupby(["score_group", "month"], observed=True)
-      .agg(
-          unique_applications=(app_col, "nunique"),
-          fraud_applications=("fraud_application", "nunique"),
-          fraud_current_balance=("fraud_current_balance", "sum")
-      )
-      .reset_index()
-      .sort_values(["score_group", "month"])
+fact_df['transaction_timestamp'] = (
+    pd.to_datetime(fact_df['transaction_timestamp'], utc=True)
+    - pd.Timedelta(hours=17)
 )
-
-display(performance)
