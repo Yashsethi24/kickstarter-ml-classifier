@@ -1,8 +1,22 @@
-fact_df['transaction_timestamp'] = (
-    pd.to_datetime(fact_df['transaction_timestamp'], utc=True)
-    - pd.Timedelta(hours=17)
-)
-filtered_df = fact_df[
-    fact_df['transaction_timestamp'] >
-    pd.Timestamp('2026-11-04 04:45:00', tz='UTC')
-]
+Hello Team,
+
+Please find below the distribution of applications as part of post-deployment monitoring for the period November 3, 2026, 11:45 AM to November 4, 2026, 6:59 AM.
+
+TransUnion Score Group| TransUnion Applications| FIQM Applications| Incremental Applications (At Least 1 of 14 Facts Fired)
+0–190| 949| 196| 0
+191–199| 59| 17| 17
+200+| 113| 33| 19
+
+Based on our analysis, the changes deployed in the TransUnion production environment appear to be functioning as expected. However, we have identified an issue with the downstream processing of applications.
+
+Specifically:
+
+- 17 applications with scores between 191 and 199 were not routed to Operations for review as expected.
+- 33 applications with scores of 200 or above, which should have been declined, were instead approved and passed through to FIQM.
+
+We are coordinating with TransUnion to investigate these discrepancies, identify the root cause, and determine the necessary corrective actions.
+
+We will continue monitoring and share further updates as the investigation progresses.
+
+Regards,
+Yash
