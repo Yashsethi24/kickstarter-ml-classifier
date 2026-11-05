@@ -1,84 +1,37 @@
 import pandas as pd
 
-# Weights transcribed from your screenshots
-weights = {
-    "Velocity.IsPhoneNumberVelocityHigh": 100,
-    "Email.IsCustomerEmailAgeLow": 85,
-    "Email.DoesCustomerEmailContainMailboxIssue": 79,
-    "Email.IsCustomerEmailAgeHigh": -55,
-    "Velocity.IsPostCodeVelocityHigh": 31,
-    "History.IsCustomerBadTransHistoryBetween91and100Percent": 27,
-    "Customers.IsReturningCustomerPlatform": -22,
-    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour1": 22,
-    "Velocity.IsEmailVelocityHigh": 20,
-    "Session.IsJSEnabled": 19,
-    "Email.IsCustomerEmailPopularityLow": 15,
-    "Email.IsCustomerEmailVelocityLow": 13,
-    "Email.IsCustomerEmailPopularityMedium": 11,
-    "Velocity.IsConsumerIdSsnVelocityHigh": 11,
-    "Email.IsCustomerEmailVelocityMedium": 11,
-    "Velocity.IsConsumerIdAddressLine1VelocityHigh": 10,
-    "Velocity.IsConsumerIdEmailVelocityHigh": 9,
-    "Velocity.IsAddressLine1VelocityHigh": 7,
-    "Velocity.IsConsumerIdIPVelocityHigh": 6,
-    "Device.IsPC": -6,
-    "IP.IsProxy": 5,
-    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour2": 5,
-    "IP.IsProxyPrivate": 5,
-    "IP.IsProxyElite": 5,
-    "Velocity.IsSsnVelocityHigh": 5,
-    "IP.IsIPHostingFacility": -5,
-    "Email.IsCustomerEmailVelocityHigh": 4,
-    "Customers.IsNameUpperCase": -4,
-    "Device.IsPhone": 4,
-    "Velocity.IsIPVelocityHigh": 4,
-    "History.IsCustomerGoodTransHistoryBetween91and100Percent": -3,
-    "Velocity.IsConsumerIdDeviceIdVelocityHigh": 3,
-    "Email.IsCustomerEmailAgeMedium": -3,
-    "Velocity.IsConsumerIdPhoneNumberVelocityHigh": 3,
-    "Email.IsCustomerEmailPopularityHigh": 3,
-    "IP.DoesMerchantCountryMatchIPCountry": -2,
-    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour3": 2,
-    "IP.IsProxyService": 2,
-    "Email.DoesCustomerEmailContainDomainIssue": -2,
-    "Velocity.IsConsumerIdPostCodeVelocityHigh": -2,
-    "Lists.IsGreylisted": -2,
-    "Lists.IsBlacklisted": -1,
-    "History.IsCustomerBadTransHistoryBetween1and10Percent": -1,
-    "Email.DoesCustomerEmailContainSyntaxIssue": -1,
-    "Velocity.IsTransactionVelocityPerCustomerWithin24HoursLessThan5": 0,
-    "Velocity.IsTransactionVelocityPerCustomerWithin24HoursLessThan10": 0,
-    "Velocity.IsTransactionVelocityPerCustomerWithin24HoursLessThan15": 0,
-    "Email.IsCustomerEmailDisposable": 0,
-    "Email.IsCustomerEmailDomainNotAllowed": 0,
-    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour4": 0,
-}
+score_col = "new_weighted_score"
+app_col = "application_number"
+balance_col = "current_total_balance"
 
-# Example input:
-# Email.IsCustomerEmailVelocityLow [High] (46) |
-# Session.IsJSEnabled [Low] (5)
+df = final_df.copy()
 
-def extract_facts(value):
-    if pd.isna(value):
-        return []
+# Inclusive score groups; negative or missing scores stay ungrouped.
+score = pd.to_numeric(df[score_col], errors="coerce")
 
-    # Keep only the fact name before "[".
-    # Count each fact once per application.
-    return list(dict.fromkeys(
-        part.split("[", 1)[0].strip()
-        for part in str(value).split("|")
-        if part.strip()
-    ))
-
-fired_facts = final_df["facts_fired"].apply(extract_facts)
-
-final_df["weighted_score"] = fired_facts.apply(
-    lambda facts: sum(weights.get(fact, 0) for fact in facts)
+df["score_group"] = pd.Categorical(
+    pd.Series(index=df.index, dtype="string")
+        .mask(score.between(0, 16), "0-16")
+        .mask(score.between(17, 19), "17-19")
+        .mask(score.ge(20), "20+"),
+    categories=["0-16", "17-19", "20+"],
+    ordered=True
 )
 
-# Identify facts missing from the weight mapping.
-final_df["unmapped_facts"] = fired_facts.apply(
-    lambda facts: [fact for fact in facts if fact not in weights]
+# Retain application numbers only where fraud equals 1.
+df["fraud_application"] = df[app_col].where(
+    pd.to_numeric(df["fraud"], errors="coerce").eq(1)
 )
 
-final_df[["facts_fired", "score", "weighted_score", "unmapped_facts"]]
+performance = (
+    df.groupby(["score_group", "month"], observed=True)
+      .agg(
+          unique_applications=(app_col, "nunique"),
+          fraud_applications=("fraud_application", "nunique"),
+          total_current_balance=(balance_col, "sum")
+      )
+      .reset_index()
+      .sort_values(["score_group", "month"])
+)
+
+display(performance)
