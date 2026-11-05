@@ -1,34 +1,14 @@
-import pandas as pd
+fraud_mask = pd.to_numeric(df["fraud"], errors="coerce").eq(1)
 
-score_col = "new_weighted_score"
-app_col = "application_number"
-balance_col = "current_total_balance"
-
-df = final_df.copy()
-
-# Inclusive score groups; negative or missing scores stay ungrouped.
-score = pd.to_numeric(df[score_col], errors="coerce")
-
-df["score_group"] = pd.Categorical(
-    pd.Series(index=df.index, dtype="string")
-        .mask(score.between(0, 16), "0-16")
-        .mask(score.between(17, 19), "17-19")
-        .mask(score.ge(20), "20+"),
-    categories=["0-16", "17-19", "20+"],
-    ordered=True
-)
-
-# Retain application numbers only where fraud equals 1.
-df["fraud_application"] = df[app_col].where(
-    pd.to_numeric(df["fraud"], errors="coerce").eq(1)
-)
+df["fraud_application"] = df[app_col].where(fraud_mask)
+df["fraud_current_balance"] = df[balance_col].where(fraud_mask, 0)
 
 performance = (
     df.groupby(["score_group", "month"], observed=True)
       .agg(
           unique_applications=(app_col, "nunique"),
           fraud_applications=("fraud_application", "nunique"),
-          total_current_balance=(balance_col, "sum")
+          fraud_current_balance=("fraud_current_balance", "sum")
       )
       .reset_index()
       .sort_values(["score_group", "month"])
