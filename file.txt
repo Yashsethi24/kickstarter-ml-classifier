@@ -1,22 +1,14 @@
-Hello Team,
+Hello Debbie,
 
-Please find below the distribution of applications as part of post-deployment monitoring for the period November 3, 2026, 11:45 AM to November 4, 2026, 6:59 AM.
+I am scheduling this meeting to investigate the application actioning issues identified during our post-deployment monitoring.
 
-TransUnion Score Group| TransUnion Applications| FIQM Applications| Incremental Applications (At Least 1 of 14 Facts Fired)
-0–190| 949| 196| 0
-191–199| 59| 17| 17
-200+| 113| 33| 19
+It appears that applications are not being appropriately routed to the review queue or declined based on their TransUnion scores. I would like to use this meeting to investigate the root cause and discuss how we can resolve the issue as quickly as possible.
 
-Based on our analysis, the changes deployed in the TransUnion production environment appear to be functioning as expected. However, we have identified an issue with the downstream processing of applications.
+Just a heads-up, I have also scheduled a follow-up meeting at 11:30 AM, which includes my AVP, to discuss the findings and next steps.
 
-Specifically:
+Ideally, we are hoping to identify and resolve the issue during our initial discussion, ahead of the 11:30 AM meeting.
 
-- 17 applications with scores between 191 and 199 were not routed to Operations for review as expected.
-- 33 applications with scores of 200 or above, which should have been declined, were instead approved and passed through to FIQM.
-
-We are coordinating with TransUnion to investigate these discrepancies, identify the root cause, and determine the necessary corrective actions.
-
-We will continue monitoring and share further updates as the investigation progresses.
+Thank you for your support and collaboration.
 
 Regards,
 Yash
