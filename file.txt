@@ -1,9 +1,33 @@
-Hi Team,
+# Step 1: Filter applications where any decline fact was fired
+filtered_df = final_df[
+    final_df['FACTS_FIRED'].fillna('').apply(
+        lambda x: any(fact in x for fact in decline_facts)
+    )
+].copy()
 
-Thanks for bringing this to our attention.
+# Step 2: Monthly summary
+monthly_summary = (
+    filtered_df
+    .groupby('APPLICATION_MON')
+    .agg(
+        Total_Applications=('APPLICATION_NUMBER', 'nunique'),
 
-We will fix the column alignment issue on our end and ensure that the input files are consistent with your existing AutoBatch setup.
+        Non_Fraud_Applications=(
+            'APPLICATION_NUMBER',
+            lambda x: x[filtered_df.loc[x.index, 'FRAUD'] == 0].nunique()
+        ),
 
-The corrected column layout will be reflected in all files sent from Monday, November 9 onwards.
+        Fraud_Applications=(
+            'APPLICATION_NUMBER',
+            lambda x: x[filtered_df.loc[x.index, 'FRAUD'] == 1].nunique()
+        ),
 
-Thanks for your support!
+        Fraud_Current_Balance=(
+            'TOTAL_CURRENT_BALANCE',
+            lambda x: x[filtered_df.loc[x.index, 'FRAUD'] == 1].sum()
+        )
+    )
+    .reset_index()
+)
+
+display(monthly_summary)
