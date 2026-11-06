@@ -1,33 +1,67 @@
-# Step 1: Filter applications where any decline fact was fired
-filtered_df = final_df[
-    final_df['FACTS_FIRED'].fillna('').apply(
-        lambda x: any(fact in x for fact in decline_facts)
-    )
-].copy()
 
-# Step 2: Monthly summary
-monthly_summary = (
-    filtered_df
-    .groupby('APPLICATION_MON')
-    .agg(
-        Total_Applications=('APPLICATION_NUMBER', 'nunique'),
-
-        Non_Fraud_Applications=(
-            'APPLICATION_NUMBER',
-            lambda x: x[filtered_df.loc[x.index, 'FRAUD'] == 0].nunique()
-        ),
-
-        Fraud_Applications=(
-            'APPLICATION_NUMBER',
-            lambda x: x[filtered_df.loc[x.index, 'FRAUD'] == 1].nunique()
-        ),
-
-        Fraud_Current_Balance=(
-            'TOTAL_CURRENT_BALANCE',
-            lambda x: x[filtered_df.loc[x.index, 'FRAUD'] == 1].sum()
-        )
-    )
-    .reset_index()
-)
-
-display(monthly_summary)
+fact_scores = {
+    "Lists.IsBlacklisted": 500,
+    "History.IsCustomerBadTransHistoryBetween91and100Percent": 1001,
+    "History.IsCustomerSuspiciousTransHistoryBetween91and100Percent": 300,
+    "IP.DoesMerchantCountryMatchIPCountry": 280,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour4": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour5": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour6": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour7": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour8": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour9": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour10": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin7DaysGreaterThan60": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin7DaysLessThan30": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin24HoursGreaterThan20": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin24HoursLessThan5": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin24HoursLessThan10": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin24HoursLessThan15": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin24HoursLessThan20": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin30DaysGreaterThan60": 240,
+    "Email.IsCustomerEmailDisposable": 215,
+    "Email.IsCustomerEmailDomainNotAllowed": 215,
+    "Email.IsCustomerEmailUserNameNotAllowed": 215,
+    "History.IsCustomerBadTransHistoryBetween41and50Percent": 190,
+    "IP.IsProxyElite": 190,
+    "IP.IsProxyService": 190,
+    "Lists.IsGreylisted": 190,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour3": 1002,
+    "IP.IsIPHostingFacility": 155,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour2": 1006,
+    "Email.DoesCustomerEmailContainDomainIssue": 145,
+    "Email.DoesCustomerEmailContainMailboxIssue": 1011,
+    "Email.IsCustomerEmailAgeLow": 92,
+    "History.IsCustomerBadTransHistoryBetween1and10Percent": 80,
+    "Email.DoesCustomerEmailContainSyntaxIssue": 60,
+    "Email.IsCustomerEmailPopularityLow": 46,
+    "Email.IsCustomerEmailVelocityLow": 46,
+    "Velocity.IsIPVelocityHigh": 1004,
+    "Velocity.IsConsumerIdPhoneNumberVelocityHigh": 1010,
+    "Velocity.IsPhoneNumberVelocityHigh": 1007,
+    "Velocity.IsPostCodeVelocityHigh": 20,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour1": 1013,
+    "Velocity.IsEmailVelocityHigh": 19,
+    "Device.IsPhone": 17,
+    "Velocity.IsAddressLine1VelocityHigh": 15,
+    "Velocity.IsConsumerIdAddressLine1VelocityHigh": 1012,
+    "Velocity.IsConsumerIdEmailVelocityHigh": 1009,
+    "Velocity.IsConsumerIdPostCodeVelocityHigh": 13,
+    "Velocity.IsConsumerIdDeviceIdVelocityHigh": 1005,
+    "Customers.IsNameUpperCase": 10,
+    "Velocity.IsConsumerIdIPVelocityHigh": 1008,
+    "Velocity.IsConsumerIdSsnVelocityHigh": 1003,
+    "Velocity.IsSsnVelocityHigh": 10,
+    "Customers.IsReturningCustomerPlatform": 5,
+    "Session.IsJSEnabled": 5,
+    "Device.IsPC": 1,
+    "IP.IsProxy": 1,
+    "IP.IsProxyPrivate": 1,
+    "Email.IsCustomerEmailAgeMedium": -6,
+    "Email.IsCustomerEmailPopularityMedium": -8,
+    "Email.IsCustomerEmailVelocityMedium": -8,
+    "History.IsCustomerGoodTransHistoryBetween91and100Percent": -25,
+    "Email.IsCustomerEmailPopularityHigh": -30,
+    "Email.IsCustomerEmailVelocityHigh": -30,
+    "Email.IsCustomerEmailAgeHigh": -45
+}
