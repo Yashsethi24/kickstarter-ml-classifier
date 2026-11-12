@@ -1,19 +1,18 @@
-Hi Debbie,
+import pandas as pd
+import glob
+import os
 
-Thank you for sharing the notes from Friday’s meeting.
+# Databricks Workspace folder path
+folder_path = "/Workspace/Users/rajshreyas.penukonda@td.com/Applications Fraud/TU IDX/PL/Daily Automation/Card_Blockings/FICO"
 
-I wanted to provide a quick update that we have successfully identified the recommendation (Pass, Fail, or Flag) being sent by TransUnion to TD Bank for each application. We are currently working on leveraging this recommendation for downstream application decisioning.
+# Get all CSV files
+files = glob.glob(os.path.join(folder_path, "*.csv"))
 
-In parallel, we would like to initiate our analysis for MBNA applications as well.
+# Read and concatenate
+final_df = pd.concat(
+    [pd.read_csv(file, sep="|") for file in files],
+    ignore_index=True
+)
 
-Could you please share the MBNA application data from July through October 2026, including the following, similar to what was previously shared for Amazon?
-
-- PI details for each application
-- All facts fired, including both positive and negative facts
-
-This will help us begin our analysis and evaluate potential opportunities for strategy optimization.
-
-Thank you for your continued support!
-
-Best regards,
-Yash
+print(f"Total files read: {len(files)}")
+print(f"Total records: {len(final_df)}")
