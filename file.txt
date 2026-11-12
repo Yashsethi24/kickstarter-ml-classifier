@@ -20,3 +20,56 @@ LEFT SEMI JOIN amazon_applications AS a
 WHERE m.RULE_NAME != ''
 GROUP BY m.RULE_NAME
 ORDER BY ALERTED_APPLICATIONS DESC, m.RULE_NAME;
+
+
+, bounds AS (
+    SELECT CAST(DATE_TRUNC('MONTH', CURRENT_DATE()) AS DATE) AS current_month
+),
+months AS (
+    SELECT EXPLODE(SEQUENCE(
+        ADD_MONTHS(current_month, -6),
+        ADD_MONTHS(current_month, -1),
+        INTERVAL 1 MONTH
+    )) AS alert_month
+    FROM bounds
+),
+selected_rules AS (
+    SELECT DISTINCT TRIM(rule_name) AS rule_name
+    FROM EXPLODE(SPLIT(:rule_names, ',')) AS r(rule_name)
+    WHERE TRIM(rule_name) != ''
+),
+rule_hits AS (
+    SELECT DISTINCT
+        CAST(DATE_TRUNC('MONTH', m.CREATE_DATE_TIME) AS DATE) AS alert_month,
+        m.RULE_NAME AS rule_name,
+        m.APPLICATION_NUMBER
+    FROM hive_metastore.fiqm.tdct_rt_match AS m
+    INNER JOIN selected_rules AS r
+        ON m.RULE_NAME = r.rule_name
+    LEFT SEMI JOIN amazon_applications AS a
+        ON m.APPLICATION_NUMBER = a.APPLICATION_NUMBER
+    CROSS JOIN bounds AS b
+    WHERE m.CREATE_DATE_TIME >= ADD_MONTHS(b.current_month, -6)
+      AND m.CREATE_DATE_TIME < b.current_month
+),
+monthly AS (
+    SELECT
+        mo.alert_month,
+        r.rule_name,
+        COUNT(h.APPLICATION_NUMBER) AS alerted_applications
+    FROM months AS mo
+    CROSS JOIN selected_rules AS r
+    LEFT JOIN rule_hits AS h
+        ON h.alert_month = mo.alert_month
+       AND h.rule_name = r.rule_name
+    GROUP BY mo.alert_month, r.rule_name
+)
+SELECT
+    alert_month,
+    rule_name,
+    alerted_applications,
+    alerted_applications - LAG(alerted_applications) OVER (
+        PARTITION BY rule_name ORDER BY alert_month
+    ) AS mom_alerted_application_change
+FROM monthly
+ORDER BY rule_name, alert_month;
