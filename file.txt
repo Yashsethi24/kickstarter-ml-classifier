@@ -1,18 +1,22 @@
-import pandas as pd
-import glob
-import os
-
-# Databricks Workspace folder path
-folder_path = "/Workspace/Users/rajshreyas.penukonda@td.com/Applications Fraud/TU IDX/PL/Daily Automation/Card_Blockings/FICO"
-
-# Get all CSV files
-files = glob.glob(os.path.join(folder_path, "*.csv"))
-
-# Read and concatenate
-final_df = pd.concat(
-    [pd.read_csv(file, sep="|") for file in files],
-    ignore_index=True
+WITH amazon_applications AS (
+    SELECT DISTINCT
+        a.APPLICATION_NUMBER
+    FROM hive_metastore.fiqm.applications AS a
+    LEFT SEMI JOIN tsys.v_cfm_tsys_mbna_acct_slim AS s
+        ON TRY_CAST(a.ACCOUNT_NUMBER AS DECIMAL(38, 0)) =
+           TRY_CAST(s.APPLID AS DECIMAL(38, 0))
+       AND s.PRODUCT_CODE = :amazon_product_code
+    WHERE a.APPLICATION_NUMBER != ''
+      AND a.ACCOUNT_NUMBER RLIKE '^[0-9]+$'
 )
 
-print(f"Total files read: {len(files)}")
-print(f"Total records: {len(final_df)}")
+SELECT
+    m.RULE_NAME,
+    MAX_BY(m.RULE_DISPLAYNAME, m.CREATE_DATE_TIME) AS RULE_DISPLAYNAME,
+    COUNT(DISTINCT m.APPLICATION_NUMBER) AS ALERTED_APPLICATIONS
+FROM hive_metastore.fiqm.tdct_rt_match AS m
+LEFT SEMI JOIN amazon_applications AS a
+    ON m.APPLICATION_NUMBER = a.APPLICATION_NUMBER
+WHERE m.RULE_NAME != ''
+GROUP BY m.RULE_NAME
+ORDER BY ALERTED_APPLICATIONS DESC, m.RULE_NAME;
