@@ -1,44 +1,15 @@
-from pyspark.sql import functions as F
+%sql
 
-# 1. Read FIQM applications
-fiqm = spark.table("hive_metastore.fiqm.applications")
+SELECT DISTINCT
+    a.Last_Name,
+    a.First_Name,
+    a.Date_Of_Birth,
+    b.application_number
 
-# 2. Prepare file dataframe
-file_df = (
-    files_all_v1
-    .withColumn("join_last_name", F.upper(F.trim(F.col("Last_Name"))))
-    .withColumn("join_first_name", F.upper(F.trim(F.col("First_Name"))))
-    .withColumn(
-        "join_dob",
-        F.to_date(F.col("Date_Of_Birth").cast("string"), "yyyyMMdd")
-    )
-)
+FROM file_rv1 a
 
-# 3. Prepare FIQM applications dataframe
-# Replace the column names below with the actual FIQM columns
-fiqm_df = (
-    fiqm
-    .withColumn("join_last_name", F.upper(F.trim(F.col("last_name"))))
-    .withColumn("join_first_name", F.upper(F.trim(F.col("first_name"))))
-    .withColumn("join_dob", F.to_date(F.col("date_of_birth")))
-)
-
-# 4. Join using all three fields
-final_df = (
-    file_df.alias("a")
-    .join(
-        fiqm_df.alias("b"),
-        (F.col("a.join_last_name") == F.col("b.join_last_name")) &
-        (F.col("a.join_first_name") == F.col("b.join_first_name")) &
-        (F.col("a.join_dob") == F.col("b.join_dob")),
-        "left"
-    )
-    .select(
-        "a.Last_Name",
-        "a.First_Name",
-        "a.Date_Of_Birth",
-        F.col("b.application_number").alias("Application_Number")
-    )
-)
-
-display(final_df)
+LEFT JOIN hive_metastore.fiqm.applications b
+    ON UPPER(TRIM(a.Last_Name)) = UPPER(TRIM(b.last_name))
+    AND UPPER(TRIM(a.First_Name)) = UPPER(TRIM(b.first_name))
+    AND TO_DATE(CAST(a.Date_Of_Birth AS STRING), 'yyyyMMdd')
+        = TO_DATE(b.date_of_birth)
