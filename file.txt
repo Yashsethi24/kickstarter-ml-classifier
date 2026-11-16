@@ -1,8 +1,44 @@
-SELECT
-    application_date,
-    WEEKOFYEAR(application_date) AS week_number,
-    DATE_TRUNC('WEEK', application_date) AS week_start_date,
-    DATE_ADD(
-        CAST(DATE_TRUNC('WEEK', application_date) AS DATE), 6
-    ) AS week_end_date
-FROM your_table;
+from pyspark.sql import functions as F
+
+# 1. Read FIQM applications
+fiqm = spark.table("hive_metastore.fiqm.applications")
+
+# 2. Prepare file dataframe
+file_df = (
+    files_all_v1
+    .withColumn("join_last_name", F.upper(F.trim(F.col("Last_Name"))))
+    .withColumn("join_first_name", F.upper(F.trim(F.col("First_Name"))))
+    .withColumn(
+        "join_dob",
+        F.to_date(F.col("Date_Of_Birth").cast("string"), "yyyyMMdd")
+    )
+)
+
+# 3. Prepare FIQM applications dataframe
+# Replace the column names below with the actual FIQM columns
+fiqm_df = (
+    fiqm
+    .withColumn("join_last_name", F.upper(F.trim(F.col("last_name"))))
+    .withColumn("join_first_name", F.upper(F.trim(F.col("first_name"))))
+    .withColumn("join_dob", F.to_date(F.col("date_of_birth")))
+)
+
+# 4. Join using all three fields
+final_df = (
+    file_df.alias("a")
+    .join(
+        fiqm_df.alias("b"),
+        (F.col("a.join_last_name") == F.col("b.join_last_name")) &
+        (F.col("a.join_first_name") == F.col("b.join_first_name")) &
+        (F.col("a.join_dob") == F.col("b.join_dob")),
+        "left"
+    )
+    .select(
+        "a.Last_Name",
+        "a.First_Name",
+        "a.Date_Of_Birth",
+        F.col("b.application_number").alias("Application_Number")
+    )
+)
+
+display(final_df)
