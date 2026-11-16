@@ -1,8 +1,8 @@
-Hello Sania,
-
-Since we upload CSV files to the Cust2TU folder, we had also uploaded the Fraud Feedback file in CSV format. We have now replaced it with a TXT file in the Fraud Feedback folder.
-
-Please let us know if any further changes are required.
-
-Regards,
-Yash
+SELECT
+    application_date,
+    WEEKOFYEAR(application_date) AS week_number,
+    DATE_TRUNC('WEEK', application_date) AS week_start_date,
+    DATE_ADD(
+        CAST(DATE_TRUNC('WEEK', application_date) AS DATE), 6
+    ) AS week_end_date
+FROM your_table;
