@@ -3,15 +3,16 @@ query = """
 WITH base AS (
     SELECT
         a.refno,
+
         CASE
             WHEN state_add = 'QC'
-             AND customerTenureBucket NOT IN (366, 367, 368)
+             AND customerTenureBucket NOT IN (366,367,368)
             THEN 1 ELSE 0
         END AS rule_1,
 
         CASE
             WHEN tot_household_income > 86000
-             AND customerTenureBucket IN (360, 364, 365)
+             AND customerTenureBucket IN (360,364,365)
              AND purchaseHistory = 789
              AND postal_cd_add != postal_cd_mail_add
             THEN 1 ELSE 0
@@ -19,7 +20,7 @@ WITH base AS (
 
         CASE
             WHEN tot_household_income > 62500
-             AND customerTenureBucket NOT IN (367, 368)
+             AND customerTenureBucket NOT IN (367,368)
              AND age_of_cfile > 194
             THEN 1 ELSE 0
         END AS rule_3
@@ -41,11 +42,11 @@ deduplicated AS (
 
 SELECT
     refno,
-    CONCAT_WS(', ',
-        CASE WHEN rule_1 = 1 THEN 'Rule 1' END,
-        CASE WHEN rule_2 = 1 THEN 'Rule 2' END,
-        CASE WHEN rule_3 = 1 THEN 'Rule 3' END
-    ) AS rule
+    CASE
+        WHEN rule_2 = 1 THEN 'Rule 2'
+        WHEN rule_1 = 1 THEN 'Rule 1'
+        WHEN rule_3 = 1 THEN 'Rule 3'
+    END AS rule
 FROM deduplicated
 WHERE rule_1 = 1
    OR rule_2 = 1
@@ -53,55 +54,3 @@ WHERE rule_1 = 1
 """
 
 today_df = spark.sql(query).toPandas()
-
-
-
-
-import pandas as pd
-import os
-from datetime import datetime
-
-# Persistent historical file location
-file_path = "/Volumes/catalog/schema/volume/application_history.csv"
-
-# Today's date
-today_date = datetime.today().strftime("%Y-%m-%d")
-
-# Read existing history or initialize empty DataFrame
-if os.path.exists(file_path):
-    history_df = pd.read_csv(file_path, dtype={"refno": str})
-else:
-    history_df = pd.DataFrame(
-        columns=["refno", "rule", "pulled_date"]
-    )
-
-# Standardize application numbers
-today_df["refno"] = today_df["refno"].astype(str)
-
-# Exclude applications already pulled on previous runs
-new_apps_df = today_df[
-    ~today_df["refno"].isin(history_df["refno"])
-].copy()
-
-# Add today's date
-new_apps_df["pulled_date"] = today_date
-
-print(f"Total applications matching rules: {len(today_df)}")
-print(f"Previously pulled applications: {len(today_df) - len(new_apps_df)}")
-print(f"New applications today: {len(new_apps_df)}")
-
-display(new_apps_df)
-
-
-
-
-# Append only new applications
-updated_history_df = pd.concat(
-    [history_df, new_apps_df],
-    ignore_index=True
-)
-
-# Save updated history
-updated_history_df.to_csv(file_path, index=False)
-
-print(f"History updated: {len(updated_history_df)} total applications")
