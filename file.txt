@@ -1,36 +1,39 @@
 import pandas as pd
 import glob
 import os
-from datetime import datetime
 
-# Folder containing CSV files
 folder_path = "/Workspace/Users/.../Card_Blockings/FICO"
 
-# Get all CSV files
-files = glob.glob(os.path.join(folder_path, "*.csv"))
+files = sorted(glob.glob(os.path.join(folder_path, "*.csv")))
 
 df_list = []
 
 for file in files:
 
-    # Extract filename
     filename = os.path.basename(file)
 
-    # Extract date from filename
-    date_str = filename.split("_")[3]
-
-    # Convert to date
-    run_date = datetime.strptime(date_str, "%Y%m%d").date()
+    # Extract run date
+    run_date = pd.to_datetime(
+        filename.split("_")[3],
+        format="%Y%m%d"
+    ).date()
 
     # Read CSV
-    df = pd.read_csv(file)
+    df = pd.read_csv(file, sep="|")
+
+    # Remove extra spaces from column names
+    df.columns = df.columns.str.strip()
 
     # Add run date
     df["Run_Date"] = run_date
 
     df_list.append(df)
 
-# Concatenate all CSV files
+# Check if column structure is consistent
+for file, df in zip(files, df_list):
+    print(os.path.basename(file), df.shape, df.columns.tolist())
+
+# Concatenate all files
 final_df = pd.concat(df_list, ignore_index=True)
 
 display(final_df)
