@@ -1,39 +1,95 @@
 import pandas as pd
-import glob
-import os
+from pyspark.sql import functions as F
 
-folder_path = "/Workspace/Users/.../Card_Blockings/FICO"
+# One record per card, using its earliest blocking date.
+blocked = final_df[["Card_Number", "Run_Date"]].copy()
+blocked["Card_Number"] = blocked["Card_Number"].astype("string").str.strip()
+blocked["Run_Date"] = pd.to_datetime(blocked["Run_Date"], errors="raise")
 
-files = sorted(glob.glob(os.path.join(folder_path, "*.csv")))
+blocked = (
+    blocked.dropna(subset=["Card_Number", "Run_Date"])
+           .loc[lambda x: x["Card_Number"].ne("")]
+           .groupby("Card_Number", as_index=False)["Run_Date"].min()
+)
 
-df_list = []
+# Explicit strings avoid pandas/Spark date-conversion issues.
+blocked["Run_Date"] = blocked["Run_Date"].dt.strftime("%Y-%m-%d")
 
-for file in files:
+spark.createDataFrame(
+    list(blocked.itertuples(index=False, name=None)),
+    "Card_Number string, Run_Date string"
+).createOrReplaceTempView("blocked_cards")
 
-    filename = os.path.basename(file)
+card_status_df = spark.sql("""
+WITH status_values AS (
+    SELECT
+        RIGHT(CAST(header_accessCardNumber AS STRING), 16) AS Card_Number,
+        UPPER(TRIM(CAST(cdCardStatus AS STRING))) AS Card_Status
+    FROM cad_fico_rt.pan_information_summary
+),
+status_by_card AS (
+    SELECT
+        Card_Number,
+        COUNT(DISTINCT CASE
+            WHEN Card_Status != '' THEN Card_Status
+        END) AS Status_Count,
+        MAX(CASE
+            WHEN Card_Status != '' THEN Card_Status
+        END) AS Card_Status
+    FROM status_values
+    GROUP BY Card_Number
+)
+SELECT
+    a.Card_Number,
+    TO_DATE(a.Run_Date) AS Block_Date,
+    b.Card_Status,
+    CASE
+        WHEN b.Status_Count IS NULL OR b.Status_Count = 0
+            THEN 'Unknown'
+        WHEN b.Status_Count > 1
+            THEN 'Multiple statuses'
+        WHEN b.Card_Status IN ('C', 'E')
+            THEN 'Unblocked proxy'
+        ELSE 'Suspected fraud'
+    END AS Status_Group,
+    CASE
+        WHEN b.Status_Count = 1
+        THEN CASE WHEN b.Card_Status IN ('C', 'E') THEN 0 ELSE 1 END
+    END AS SUSPECTED_FRAUD
+FROM blocked_cards a
+LEFT JOIN status_by_card b
+    ON a.Card_Number = b.Card_Number
+""")
 
-    # Extract run date
-    run_date = pd.to_datetime(
-        filename.split("_")[3],
-        format="%Y%m%d"
-    ).date()
+def unblock_summary(df, period):
+    return (
+        df.withColumn(
+            "Period_Start",
+            F.to_date(F.date_trunc(period, F.col("Block_Date")))
+        )
+        .groupBy("Period_Start")
+        .agg(
+            F.count("*").alias("Blocked_Cards"),
+            F.sum(F.when(
+                F.col("Status_Group") == "Unblocked proxy", 1
+            ).otherwise(0)).alias("Unblocked_Cards"),
+            F.sum(F.when(
+                F.col("Status_Group") == "Suspected fraud", 1
+            ).otherwise(0)).alias("Suspected_Fraud_Cards"),
+            F.sum(F.when(
+                F.col("SUSPECTED_FRAUD").isNull(), 1
+            ).otherwise(0)).alias("Unknown_or_Conflicting_Cards")
+        )
+        .withColumn(
+            "Unblock_Pct",
+            F.round(100.0 * F.col("Unblocked_Cards") /
+                    F.col("Blocked_Cards"), 2)
+        )
+        .orderBy("Period_Start")
+    )
 
-    # Read CSV
-    df = pd.read_csv(file, sep="|")
+weekly_unblock = unblock_summary(card_status_df, "week")
+monthly_unblock = unblock_summary(card_status_df, "month")
 
-    # Remove extra spaces from column names
-    df.columns = df.columns.str.strip()
-
-    # Add run date
-    df["Run_Date"] = run_date
-
-    df_list.append(df)
-
-# Check if column structure is consistent
-for file, df in zip(files, df_list):
-    print(os.path.basename(file), df.shape, df.columns.tolist())
-
-# Concatenate all files
-final_df = pd.concat(df_list, ignore_index=True)
-
-display(final_df)
+display(weekly_unblock)
+display(monthly_unblock)
