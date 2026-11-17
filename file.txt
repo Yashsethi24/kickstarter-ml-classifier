@@ -1,3 +1,7 @@
-from pyspark.sql.functions import col
+def get_run_date(file):
+    date_str = os.path.basename(file).split("_")[-1].replace(".csv", "")
 
-df = df.withColumn("column_name", col("column_name").cast("string"))
+    try:
+        return pd.to_datetime(int(date_str) - 1, format="%Y%m%d")
+    except ValueError:
+        return pd.to_datetime(date_str, format="%Y%m%d")
