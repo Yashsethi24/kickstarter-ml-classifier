@@ -1,15 +1,3 @@
-%sql
+from pyspark.sql.functions import col
 
-SELECT DISTINCT
-    a.Last_Name,
-    a.First_Name,
-    a.Date_Of_Birth,
-    b.application_number
-
-FROM file_rv1 a
-
-LEFT JOIN hive_metastore.fiqm.applications b
-    ON UPPER(TRIM(a.Last_Name)) = UPPER(TRIM(b.last_name))
-    AND UPPER(TRIM(a.First_Name)) = UPPER(TRIM(b.first_name))
-    AND TO_DATE(CAST(a.Date_Of_Birth AS STRING), 'yyyyMMdd')
-        = TO_DATE(b.date_of_birth)
+df = df.withColumn("column_name", col("column_name").cast("string"))
