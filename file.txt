@@ -1,7 +1,36 @@
-def get_run_date(file):
-    date_str = os.path.basename(file).split("_")[-1].replace(".csv", "")
+import pandas as pd
+import glob
+import os
+from datetime import datetime
 
-    try:
-        return pd.to_datetime(int(date_str) - 1, format="%Y%m%d")
-    except ValueError:
-        return pd.to_datetime(date_str, format="%Y%m%d")
+# Folder containing CSV files
+folder_path = "/Workspace/Users/.../Card_Blockings/FICO"
+
+# Get all CSV files
+files = glob.glob(os.path.join(folder_path, "*.csv"))
+
+df_list = []
+
+for file in files:
+
+    # Extract filename
+    filename = os.path.basename(file)
+
+    # Extract date from filename
+    date_str = filename.split("_")[3]
+
+    # Convert to date
+    run_date = datetime.strptime(date_str, "%Y%m%d").date()
+
+    # Read CSV
+    df = pd.read_csv(file)
+
+    # Add run date
+    df["Run_Date"] = run_date
+
+    df_list.append(df)
+
+# Concatenate all CSV files
+final_df = pd.concat(df_list, ignore_index=True)
+
+display(final_df)
