@@ -1,22 +1,4 @@
-WITH amazon_applications AS (
-    SELECT DISTINCT
-        a.APPLICATION_NUMBER
-    FROM hive_metastore.fiqm.applications AS a
-    LEFT SEMI JOIN tsys.v_cfm_tsys_mbna_acct_slim AS s
-        ON TRY_CAST(a.ACCOUNT_NUMBER AS DECIMAL(38, 0)) =
-           TRY_CAST(s.APPLID AS DECIMAL(38, 0))
-       AND s.PRODUCT_CODE = :amazon_product_code
-    WHERE a.APPLICATION_NUMBER != ''
-      AND a.ACCOUNT_NUMBER RLIKE '^[0-9]+$'
-)
-
-SELECT
-    m.RULE_NAME,
-    MAX_BY(m.RULE_DISPLAYNAME, m.CREATE_DATE_TIME) AS RULE_DISPLAYNAME,
-    COUNT(DISTINCT m.APPLICATION_NUMBER) AS ALERTED_APPLICATIONS
-FROM hive_metastore.fiqm.tdct_rt_match AS m
-LEFT SEMI JOIN amazon_applications AS a
-    ON m.APPLICATION_NUMBER = a.APPLICATION_NUMBER
-WHERE m.RULE_NAME != ''
-GROUP BY m.RULE_NAME
-ORDER BY ALERTED_APPLICATIONS DESC, m.RULE_NAME;
+for filename in os.listdir(BASE_PATH):
+    match = re.fullmatch(r"(\d{8})_pl\.csv", filename)
+    if match:
+        existing.add(match.group(1))
