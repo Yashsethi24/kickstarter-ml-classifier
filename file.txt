@@ -1,60 +1,47 @@
-E611268747
-E611268248
-E611268768
-E611268303
-E611268262
-E611268257
-E611267391
-E611266306
-E611266279
-E611266270
-E611266203
-E611266189
+import pandas as pd
+import networkx as nx
 
-E611268575
-E611268497
-E611268762
-E611268143
-E611268768
-E611268235
-E611268747
-E611268172
-E611268262
-E611268303
-E611268248
-E611265715
-E611266189
-E611266279
-E611266203
-E611266587
-E611267695
-E611268039
-E611267244
-E611267332
-E611267367
-E611267662
-E611266544
-E611267876
-E611267998
-E611268005
-E611267204
-E611267207
-E611266511
-E611268031
+def remove_cross_duplicates(df):
+    id_col = 'Unique_record_ID'
+    app_col = 'Application_Number'
 
+    # Remove exact duplicate mappings
+    pairs = df[[id_col, app_col]].dropna().drop_duplicates()
 
-E611268172
-E611268497
-E611268235
-E611268143
-E611268227
-E611268762
-E611266571
-E611266418
-E611266284
-E611266161
-E611267035
-E611266244
-E611267472
-E611266238
-E611266780
+    # Create bipartite graph
+    G = nx.Graph()
+
+    for uid, app in pairs.itertuples(index=False, name=None):
+        G.add_edge(('ID', uid), ('APP', app))
+
+    # Find maximum one-to-one matching
+    matching = nx.algorithms.bipartite.maximum_matching(
+        G,
+        top_nodes={('ID', uid) for uid in pairs[id_col].unique()}
+    )
+
+    # Extract matched combinations
+    matched_pairs = [
+        (uid[1], app[1])
+        for uid, app in matching.items()
+        if uid[0] == 'ID'
+    ]
+
+    matched_df = pd.DataFrame(
+        matched_pairs,
+        columns=[id_col, app_col]
+    )
+
+    # Retain all original columns
+    final_df = (
+        df.merge(matched_df, on=[id_col, app_col], how='inner')
+          .drop_duplicates(subset=[id_col, app_col])
+          .reset_index(drop=True)
+    )
+
+    return final_df
+
+final_df = remove_cross_duplicates(df)
+
+df = df.drop_duplicates(subset=['Unique_record_ID'])
+df = df.drop_duplicates(subset=['Application_Number'])
