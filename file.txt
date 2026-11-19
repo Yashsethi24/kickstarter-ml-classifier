@@ -1,63 +1,42 @@
 import pandas as pd
+import networkx as nx
 
-def validate_record_ids(df, id_col='Unique_record_ID'):
+def remove_cross_duplicates(df):
+    id_col = 'Unique_record_ID'
+    app_col = 'Application_Number'
 
-    ids = df[id_col].astype('string').str.strip()
+    # Remove exact duplicate mappings
+    pairs = df[[id_col, app_col]].dropna().drop_duplicates()
 
-    # Validate ID format: A + YYYYMMDD + 4 digits
-    valid_format = ids.str.fullmatch(r'A\d{8}\d{4}').fillna(False)
+    # Create bipartite graph
+    G = nx.Graph()
 
-    # Check invalid IDs
-    invalid_ids = df.loc[~valid_format].copy()
+    for uid, app in pairs.itertuples(index=False, name=None):
+        G.add_edge(('ID', uid), ('APP', app))
 
-    # Extract valid IDs
-    valid_ids = ids[valid_format]
-
-    temp = pd.DataFrame({
-        'Record_ID': valid_ids,
-        'Date': valid_ids.str[1:9],
-        'Sequence': valid_ids.str[9:13].astype(int)
-    })
-
-    # Check duplicate IDs
-    duplicate_ids = (
-        temp[temp.duplicated('Record_ID', keep=False)]
-        .sort_values('Record_ID')
+    # Find maximum one-to-one matching
+    matching = nx.algorithms.bipartite.maximum_matching(
+        G,
+        top_nodes={('ID', uid) for uid in pairs[id_col].unique()}
     )
 
-    # Check missing sequence numbers for each date
-    missing_list = []
-    summary_list = []
+    # Extract matched combinations
+    matched_pairs = [
+        (uid[1], app[1])
+        for uid, app in matching.items()
+        if uid[0] == 'ID'
+    ]
 
-    for date, group in temp.groupby('Date'):
-
-        sequences = set(group['Sequence'])
-        max_seq = max(sequences)
-
-        expected = set(range(1, max_seq + 1))
-        missing = sorted(expected - sequences)
-
-        duplicates = group['Record_ID'].duplicated().sum()
-
-        for seq in missing:
-            missing_list.append({
-                'Date': date,
-                'Missing_ID': f'A{date}{seq:04d}'
-            })
-
-        summary_list.append({
-            'Date': date,
-            'Total_Records': len(group),
-            'Unique_IDs': group['Record_ID'].nunique(),
-            'Expected_Records': max_seq,
-            'Missing_Count': len(missing),
-            'Duplicate_Count': duplicates
-        })
-
-    missing_df = pd.DataFrame(
-        missing_list, columns=['Date', 'Missing_ID']
+    matched_df = pd.DataFrame(
+        matched_pairs,
+        columns=[id_col, app_col]
     )
 
-    summary_df = pd.DataFrame(summary_list)
+    # Retain all original columns
+    final_df = (
+        df.merge(matched_df, on=[id_col, app_col], how='inner')
+          .drop_duplicates(subset=[id_col, app_col])
+          .reset_index(drop=True)
+    )
 
-    return summary_df, missing_df, duplicate_ids, invalid_ids
+    return final_df
