@@ -2,25 +2,42 @@ import pandas as pd
 import networkx as nx
 
 def remove_cross_duplicates(df):
+
     id_col = 'Unique_record_ID'
     app_col = 'Application_Number'
 
-    # Remove exact duplicate mappings
-    pairs = df[[id_col, app_col]].dropna().drop_duplicates()
+    # Remove duplicate ID-Application combinations
+    df = df.drop_duplicates(
+        subset=[id_col, app_col]
+    ).copy()
 
-    # Create bipartite graph
+    # Count occurrences
+    id_count = df.groupby(id_col)[app_col].transform('size')
+    app_count = df.groupby(app_col)[id_col].transform('size')
+
+    # Keep records that have no duplicates on either side
+    unique_df = df[(id_count == 1) & (app_count == 1)]
+
+    # Remaining records
+    duplicate_df = df[~((id_count == 1) & (app_count == 1))]
+
+    # Create graph
     G = nx.Graph()
 
-    for uid, app in pairs.itertuples(index=False, name=None):
+    for uid, app in duplicate_df[[id_col, app_col]].itertuples(
+        index=False, name=None
+    ):
         G.add_edge(('ID', uid), ('APP', app))
 
-    # Find maximum one-to-one matching
+    # Maximum matching
     matching = nx.algorithms.bipartite.maximum_matching(
         G,
-        top_nodes={('ID', uid) for uid in pairs[id_col].unique()}
+        top_nodes={
+            ('ID', uid)
+            for uid in duplicate_df[id_col].unique()
+        }
     )
 
-    # Extract matched combinations
     matched_pairs = [
         (uid[1], app[1])
         for uid, app in matching.items()
@@ -32,16 +49,16 @@ def remove_cross_duplicates(df):
         columns=[id_col, app_col]
     )
 
-    # Retain all original columns
-    final_df = (
-        df.merge(matched_df, on=[id_col, app_col], how='inner')
-          .drop_duplicates(subset=[id_col, app_col])
-          .reset_index(drop=True)
+    matched_records = duplicate_df.merge(
+        matched_df,
+        on=[id_col, app_col],
+        how='inner'
+    )
+
+    # Combine unique records and resolved duplicates
+    final_df = pd.concat(
+        [unique_df, matched_records],
+        ignore_index=True
     )
 
     return final_df
-
-final_df = remove_cross_duplicates(df)
-
-df = df.drop_duplicates(subset=['Unique_record_ID'])
-df = df.drop_duplicates(subset=['Application_Number'])
