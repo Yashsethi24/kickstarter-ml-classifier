@@ -1,2 +1,14 @@
-ON LOWER(TRIM(CONCAT_WS(' ', a.FIRST_NAME, a.LAST_NAME))) =
-   LOWER(TRIM(CONCAT_WS(' ', b.FIRST_NAME, b.LAST_NAME)))
+SELECT *,
+    LOWER(TRIM(CONCAT_WS(' ',
+        CASE
+            WHEN UPPER(TRIM(PRIMARY_FIRST_NAME)) = 'NULL'
+            THEN NULL
+            ELSE PRIMARY_FIRST_NAME
+        END,
+        CASE
+            WHEN UPPER(TRIM(PRIMARY_FAMILY_NAME)) = 'NULL'
+            THEN NULL
+            ELSE PRIMARY_FAMILY_NAME
+        END
+    ))) AS l_name
+FROM hive_metastore.fiqm.applications)))
