@@ -6,59 +6,44 @@ def remove_cross_duplicates(df):
     id_col = 'Unique_record_ID'
     app_col = 'Application_Number'
 
-    # Remove duplicate ID-Application combinations
-    df = df.drop_duplicates(
-        subset=[id_col, app_col]
-    ).copy()
+    # Preserve original data and index
+    temp = df.reset_index(drop=True).copy()
 
-    # Count occurrences
-    id_count = df.groupby(id_col)[app_col].transform('size')
-    app_count = df.groupby(app_col)[id_col].transform('size')
-
-    # Keep records that have no duplicates on either side
-    unique_df = df[(id_count == 1) & (app_count == 1)]
-
-    # Remaining records
-    duplicate_df = df[~((id_count == 1) & (app_count == 1))]
+    # Remove exact duplicate ID-application pairs
+    pairs = temp[[id_col, app_col]].dropna().drop_duplicates()
 
     # Create graph
     G = nx.Graph()
 
-    for uid, app in duplicate_df[[id_col, app_col]].itertuples(
-        index=False, name=None
-    ):
+    for uid, app in pairs.itertuples(index=False, name=None):
         G.add_edge(('ID', uid), ('APP', app))
 
-    # Maximum matching
+    # Find maximum one-to-one mapping
     matching = nx.algorithms.bipartite.maximum_matching(
         G,
-        top_nodes={
-            ('ID', uid)
-            for uid in duplicate_df[id_col].unique()
-        }
+        top_nodes={('ID', x) for x in pairs[id_col].unique()}
     )
 
-    matched_pairs = [
-        (uid[1], app[1])
-        for uid, app in matching.items()
-        if uid[0] == 'ID'
+    # Get selected ID-application pairs
+    selected_pairs = {
+        (node[1], partner[1])
+        for node, partner in matching.items()
+        if node[0] == 'ID'
+    }
+
+    # Keep only selected combinations
+    mask = [
+        (uid, app) in selected_pairs
+        for uid, app in zip(temp[id_col], temp[app_col])
     ]
 
-    matched_df = pd.DataFrame(
-        matched_pairs,
-        columns=[id_col, app_col]
-    )
-
-    matched_records = duplicate_df.merge(
-        matched_df,
-        on=[id_col, app_col],
-        how='inner'
-    )
-
-    # Combine unique records and resolved duplicates
-    final_df = pd.concat(
-        [unique_df, matched_records],
-        ignore_index=True
+    final_df = (
+        temp.loc[mask]
+        .drop_duplicates(subset=[id_col, app_col])
+        .reset_index(drop=True)
     )
 
     return final_df
+
+
+final_df = remove_cross_duplicates(df)
