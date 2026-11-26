@@ -1,9 +1,10 @@
-import pandas as pd
-import glob
-import os
+Good morning, Marie,
 
-folder_path = r"Your_folder_path\Autoblocks\logs"
+Thank you for taking the time to discuss this internally and share your recommendations.
 
-files = glob.glob(os.path.join(folder_path, "CON_*.csv"))
+We will evaluate the potential impact of closing the accounts rather than blocking them. Providing Detection with guidelines for referring accounts to a manager in cases of potential credit risk would also be very helpful, and we can proceed with that approach.
 
-df = pd.concat([pd.read_csv(f, dtype=str) for f in files], ignore_index=True)
+Additionally, did you get a chance to review the remaining four cases? Could you please share the application-level findings for the 1,015 applications shared earlier so that we can communicate them to the Credit Risk team?
+
+Thanks,
+Yash
