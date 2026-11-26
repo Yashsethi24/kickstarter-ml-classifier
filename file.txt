@@ -1,1 +1,9 @@
-DF_HIST['ACCT_NUM_TA1'].dropna().astype(str).loc[lambda x: ~x.isin(['None', 'nan', '']) & ~x.isin(blocked_cards['Card'].astype(str))].drop_duplicates().to_csv(blocked_cards_path, mode='a', index=False, header=False)
+import pandas as pd
+import glob
+import os
+
+folder_path = r"Your_folder_path\Autoblocks\logs"
+
+files = glob.glob(os.path.join(folder_path, "CON_*.csv"))
+
+df = pd.concat([pd.read_csv(f, dtype=str) for f in files], ignore_index=True)
