@@ -1,540 +1,406 @@
-mbna_8day_report = f"""
-WITH parameters AS (
-    SELECT
-        DATE_SUB(CURRENT_DATE(), 1) AS report_date,
-        DATE_SUB(CURRENT_DATE(), 8) AS report_start,
-        DATE_SUB(CURRENT_DATE(), 98) AS benchmark_start,
-        DATE_SUB(CURRENT_DATE(), 9) AS benchmark_end,
-        8 AS report_days,
-        90 AS benchmark_days
-),
-
-base_data AS (
-    SELECT
-        TO_DATE(Application_Date) AS application_date,
-
-        CASE
-            WHEN UPPER(TRIM(Address_Province))
-                IN ('ON', 'ONTARIO') THEN 'ON'
-
-            WHEN UPPER(TRIM(Address_Province))
-                IN ('QC', 'PQ', 'QUEBEC', 'QUÉBEC') THEN 'QC'
-
-            WHEN UPPER(TRIM(Address_Province))
-                IN ('AB', 'ALBERTA') THEN 'AB'
-
-            WHEN UPPER(TRIM(Address_Province))
-                IN ('BC', 'BRITISH COLUMBIA') THEN 'BC'
-
-            ELSE 'Others'
-        END AS province_group,
-
-        CASE
-            WHEN Transit_Number = 'AMAZXX' THEN 'AMAZON'
-            ELSE 'MBNA'
-        END AS channel,
-
-        CAST(Application_Number AS STRING)
-            AS application_number,
-
-        COALESCE(
-            TRY_CAST(
-                REGEXP_REPLACE(
-                    CAST(Credit_Limit AS STRING), ',', ''
-                ) AS DECIMAL(18, 2)
-            ), 0
-        ) AS credit_limit
-
-    FROM hive_metastore.fiqm.applications
-
-    WHERE Product_Type = 'PUCC'
-        AND DATA_SOURCE = 'MBNA'
-        AND Application_Number IS NOT NULL
-        AND Application_Number RLIKE '^[A-E]'
-        AND TO_DATE(Application_Date) BETWEEN
-            DATE_SUB(CURRENT_DATE(), 98)
-            AND DATE_SUB(CURRENT_DATE(), 1)
-),
-
--- Aggregate claims data to avoid duplicates
-
-claims_data AS (
-    SELECT
-        CAST(Application_Number AS STRING)
-            AS application_number,
-
-        MAX(
-            CASE
-                WHEN priority_alert_ind = 1 THEN 1
-                ELSE 0
-            END
-        ) AS priority_alert_ind,
-
-        MAX(
-            CASE
-                WHEN CONF_APP_FRAUD = 1 OR claim_ind = 1
-                    THEN 1
-                ELSE 0
-            END
-        ) AS fraud_ind
-
-    FROM claims_final_ss11
-
-    GROUP BY CAST(Application_Number AS STRING)
-),
-
-om5_data AS (
-    SELECT DISTINCT
-        CAST(Application_Number AS STRING)
-            AS application_number
-
-    FROM om5_alerts
-),
-
--- Add alert and fraud indicators
-
-base_w_alerts AS (
-    SELECT
-        a.*,
-
-        COALESCE(b.priority_alert_ind, 0)
-            AS priority_alert_ind,
-
-        CASE
-            WHEN c.application_number IS NOT NULL
-                THEN 1
-            ELSE 0
-        END AS OM5_Alert,
-
-        COALESCE(b.fraud_ind, 0) AS fraud_ind
-
-    FROM base_data a
-
-    LEFT JOIN claims_data b
-        ON a.application_number = b.application_number
-
-    LEFT JOIN om5_data c
-        ON a.application_number = c.application_number
-),
-
-channel_data AS (
-    SELECT
-        *,
-
-        CASE
-            WHEN OM5_Alert = 1 OR priority_alert_ind = 1
-                THEN 1
-            ELSE 0
-        END AS alert_ind
-
-    FROM base_w_alerts
-
-    WHERE channel IN ('MBNA', 'AMAZON')
-),
-
--- Previous 90-day historical benchmark
-
-benchmark AS (
-    SELECT
-        b.channel,
-        b.province_group,
-
-        COUNT(DISTINCT b.application_number)
-            AS benchmark_application_count,
-
-        SUM(b.credit_limit)
-            AS benchmark_credit_limit,
-
-        COUNT(DISTINCT CASE
-            WHEN b.alert_ind = 1
-            THEN b.application_number
-        END) AS benchmark_alerts_count,
-
-        COUNT(DISTINCT CASE
-            WHEN b.fraud_ind = 1
-            THEN b.application_number
-        END) AS benchmark_frauds_count
-
-    FROM channel_data b
-    CROSS JOIN parameters p
-
-    WHERE b.application_date BETWEEN
-        p.benchmark_start AND p.benchmark_end
-
-    GROUP BY
-        b.channel,
-        b.province_group
-),
-
--- Actual metrics for the last 8 days
-
-last_8days_actual AS (
-    SELECT
-        b.channel,
-        b.province_group,
-
-        COUNT(DISTINCT b.application_number)
-            AS actual_application_count,
-
-        SUM(b.credit_limit)
-            AS actual_credit_limit,
-
-        COUNT(DISTINCT CASE
-            WHEN b.alert_ind = 1
-            THEN b.application_number
-        END) AS actual_alerts_count,
-
-        COUNT(DISTINCT CASE
-            WHEN b.fraud_ind = 1
-            THEN b.application_number
-        END) AS actual_frauds_count
-
-    FROM channel_data b
-    CROSS JOIN parameters p
-
-    WHERE b.application_date BETWEEN
-        p.report_start AND p.report_date
-
-    GROUP BY
-        b.channel,
-        b.province_group
-),
-
-channel_list AS (
-    SELECT channel
-    FROM VALUES
-        ('MBNA'),
-        ('AMAZON')
-    AS channel_list(channel)
-),
-
-province_list AS (
-    SELECT province_group
-    FROM VALUES
-        ('ON'),
-        ('QC'),
-        ('AB'),
-        ('BC'),
-        ('Others')
-    AS province_list(province_group)
-),
-
-report_groups AS (
-    SELECT
-        c.channel,
-        g.province_group
-
-    FROM channel_list c
-    CROSS JOIN province_list g
-),
-
-report_metrics AS (
-    SELECT
-        p.report_date,
-        p.report_start,
-        p.benchmark_start,
-        p.benchmark_end,
-
-        rg.channel,
-        rg.province_group,
-
-        -- APPLICATION COUNT
-
-        CAST(
-            COALESCE(a.actual_application_count, 0)
-        AS INT) AS actual_application_count,
-
-        CAST(ROUND(
-            COALESCE(b.benchmark_application_count, 0)
-            / NULLIF(p.benchmark_days, 0)
-            * p.report_days, 0
-        ) AS INT) AS expected_application_count,
-
-        -- CREDIT LIMIT
-
-        CONCAT(
-            '$',
-            FORMAT_NUMBER(
-                COALESCE(a.actual_credit_limit, 0), 0
-            )
-        ) AS actual_credit_limit,
-
-        CONCAT(
-            '$',
-            FORMAT_NUMBER(
-                COALESCE(b.benchmark_credit_limit, 0)
-                / NULLIF(p.benchmark_days, 0)
-                * p.report_days, 0
-            )
-        ) AS expected_credit_limit,
-
-        -- ALERT COUNT
-
-        CAST(
-            COALESCE(a.actual_alerts_count, 0)
-        AS INT) AS actual_alerts_count,
-
-        CAST(ROUND(
-            COALESCE(b.benchmark_alerts_count, 0)
-            / NULLIF(p.benchmark_days, 0)
-            * p.report_days, 0
-        ) AS INT) AS expected_alerts_count,
-
-        -- FRAUD COUNT
-
-        CAST(
-            COALESCE(a.actual_frauds_count, 0)
-        AS INT) AS actual_frauds_count,
-
-        CAST(ROUND(
-            COALESCE(b.benchmark_frauds_count, 0)
-            / NULLIF(p.benchmark_days, 0)
-            * p.report_days, 0
-        ) AS INT) AS expected_frauds_count
-
-    FROM report_groups rg
-    CROSS JOIN parameters p
-
-    LEFT JOIN benchmark b
-        ON rg.channel = b.channel
-        AND rg.province_group = b.province_group
-
-    LEFT JOIN last_8days_actual a
-        ON rg.channel = a.channel
-        AND rg.province_group = a.province_group
-)
-
-SELECT
-    *,
-
-    -- APPLICATION THRESHOLD
-
-    CASE
-        WHEN expected_application_count = 0
-            AND actual_application_count = 0
-            THEN '🟢Green'
-
-        WHEN expected_application_count = 0
-            AND actual_application_count > 0
-            THEN '🔴Red'
-
-        WHEN actual_application_count
-            <= expected_application_count * 1.25
-            THEN '🟢Green'
-
-        WHEN actual_application_count
-            <= expected_application_count * 1.50
-            THEN '🟠Yellow'
-
-        ELSE '🔴Red'
-    END AS Threshold,
-
-    -- ALERT THRESHOLD
-
-    CASE
-        WHEN expected_alerts_count = 0
-            AND actual_alerts_count = 0
-            THEN '🟢Green'
-
-        WHEN expected_alerts_count = 0
-            AND actual_alerts_count > 0
-            THEN '🔴Red'
-
-        WHEN actual_alerts_count
-            <= expected_alerts_count * 1.25
-            THEN '🟢Green'
-
-        WHEN actual_alerts_count
-            <= expected_alerts_count * 1.50
-            THEN '🟠Yellow'
-
-        ELSE '🔴Red'
-    END AS Alerts_Threshold,
-
-    -- FRAUD THRESHOLD
-
-    CASE
-        WHEN expected_frauds_count = 0
-            AND actual_frauds_count = 0
-            THEN '🟢Green'
-
-        WHEN expected_frauds_count = 0
-            AND actual_frauds_count > 0
-            THEN '🔴Red'
-
-        WHEN actual_frauds_count
-            <= expected_frauds_count * 1.25
-            THEN '🟢Green'
-
-        WHEN actual_frauds_count
-            <= expected_frauds_count * 1.50
-            THEN '🟠Yellow'
-
-        ELSE '🔴Red'
-    END AS Frauds_Threshold
-
-FROM report_metrics
-
-ORDER BY
-    CASE channel
-        WHEN 'MBNA' THEN 1
-        WHEN 'AMAZON' THEN 2
-        ELSE 3
-    END,
-
-    CASE province_group
-        WHEN 'ON' THEN 1
-        WHEN 'QC' THEN 2
-        WHEN 'AB' THEN 3
-        WHEN 'BC' THEN 4
-        ELSE 5
-    END
-"""
-
-mbna_8day_report = spark.sql(mbna_8day_report)
-mbna_8day_report = mbna_8day_report.toPandas()
-
-display(mbna_8day_report)
-
-
-# ----------------------------------------------------------
-# 1. Prepare the dataframe for plotting
-# ----------------------------------------------------------
-
-mbna_8day_plot = mbna_8day_report.copy()
-
-mbna_8day_plot["channel"] = (
-    mbna_8day_plot["channel"]
+import pandas as pd
+
+# ==========================================================
+# 1. Determine overall email threshold
+# ==========================================================
+
+threshold_columns = [
+    "Threshold",
+    "Alerts_Threshold",
+    "Frauds_Threshold"
+]
+
+monthly_thresholds = (
+    mbna_report[threshold_columns]
     .astype(str)
-    .str.strip()
-    .str.upper()
+    .to_numpy()
+    .flatten()
+    .tolist()
 )
 
-mbna_8day_plot["province_group"] = (
-    mbna_8day_plot["province_group"]
+daily_thresholds = (
+    mbna_8day_report[threshold_columns]
     .astype(str)
-    .str.strip()
-    .str.upper()
+    .to_numpy()
+    .flatten()
+    .tolist()
 )
 
-# ----------------------------------------------------------
-# 2. Application Count Graph
-# ----------------------------------------------------------
+all_thresholds = [
+    x.upper()
+    for x in monthly_thresholds + daily_thresholds
+]
 
-application_8day_graph_info = plot_metric_comparison(
-    df=mbna_8day_plot,
-    actual_col="actual_application_count",
-    expected_col="expected_application_count",
-    title="MBNA and Amazon Application Count: Last 8 Days",
-    y_label="Application Count",
-    save_filename="mbna_8day_application_count.png",
-    actual_label="8-Day Actual",
-    expected_label="8-Day Expected",
-    show_plot=True
-)
+if any("RED" in x for x in all_thresholds):
+    email_status = "RED"
 
-# ----------------------------------------------------------
-# 3. Alert Count Graph
-# ----------------------------------------------------------
+elif any("YELLOW" in x for x in all_thresholds):
+    email_status = "YELLOW"
 
-alert_8day_graph_info = plot_metric_comparison(
-    df=mbna_8day_plot,
-    actual_col="actual_alerts_count",
-    expected_col="expected_alerts_count",
-    title="MBNA and Amazon Alert Count: Last 8 Days",
-    y_label="Alert Count",
-    save_filename="mbna_8day_alert_count.png",
-    actual_label="8-Day Actual",
-    expected_label="8-Day Expected",
-    show_plot=True
-)
+elif all_thresholds and all(
+    "GREEN" in x for x in all_thresholds
+):
+    email_status = "GREEN"
 
-# ----------------------------------------------------------
-# 4. Fraud Count Graph
-# ----------------------------------------------------------
+else:
+    email_status = "UNKNOWN"
 
-fraud_8day_graph_info = plot_metric_comparison(
-    df=mbna_8day_plot,
-    actual_col="actual_frauds_count",
-    expected_col="expected_frauds_count",
-    title="MBNA and Amazon Fraud Count: Last 8 Days",
-    y_label="Fraud Count",
-    save_filename="mbna_8day_fraud_count.png",
-    actual_label="8-Day Actual",
-    expected_label="8-Day Expected",
-    show_plot=True
+
+# ==========================================================
+# 2. Email subject
+# ==========================================================
+
+subject = (
+    f"[{email_status}] Daily MBNA and Amazon "
+    f"Application, Alert, Fraud and Credit Limit Reporting"
 )
 
 
-# ----------------------------------------------------------
-# Saved PNG file paths
-# ----------------------------------------------------------
+# ==========================================================
+# 3. Reporting dates
+# ==========================================================
 
-application_8day_graph_path = application_8day_graph_info["save_path"]
-alert_8day_graph_path = alert_8day_graph_info["save_path"]
-fraud_8day_graph_path = fraud_8day_graph_info["save_path"]
+report_date = pd.to_datetime(
+    mbna_report["report_date"].iloc[0]
+)
 
-# ----------------------------------------------------------
-# Base64 encoded graphs
-# ----------------------------------------------------------
+monthly_start = report_date.replace(day=1)
 
-mbna_8day_application_graph = application_8day_graph_info["base64"]
-mbna_8day_alert_graph = alert_8day_graph_info["base64"]
-mbna_8day_fraud_graph = fraud_8day_graph_info["base64"]
+daily_start = pd.to_datetime(
+    mbna_8day_report["report_start"].iloc[0]
+)
 
-# ----------------------------------------------------------
-# Individual HTML blocks
-# ----------------------------------------------------------
+daily_end = pd.to_datetime(
+    mbna_8day_report["report_date"].iloc[0]
+)
 
-mbna_8day_application_html = application_8day_graph_info["html"]
-mbna_8day_alert_html = alert_8day_graph_info["html"]
-mbna_8day_fraud_html = fraud_8day_graph_info["html"]
+benchmark_start = pd.to_datetime(
+    mbna_8day_report["benchmark_start"].iloc[0]
+)
 
-# ----------------------------------------------------------
-# Combined HTML block
-# ----------------------------------------------------------
-
-mbna_8day_graphs_html = f"""
-{mbna_8day_application_html}
-<br><br>
-{mbna_8day_alert_html}
-<br><br>
-{mbna_8day_fraud_html}
-"""
+benchmark_end = pd.to_datetime(
+    mbna_8day_report["benchmark_end"].iloc[0]
+)
 
 
-mbna_8day_table_html = (
-    mbna_8day_report
-    .drop(columns=[
-        "report_date",
-        "report_start",
-        "benchmark_start",
-        "benchmark_end"
-    ])
+# ==========================================================
+# 4. Convert monthly report to HTML
+# ==========================================================
+
+mbna_monthly_table_html = (
+    mbna_report
+    .drop(
+        columns=[
+            "report_date",
+            "channel_sort",
+            "province_sort"
+        ],
+        errors="ignore"
+    )
     .to_html(index=False)
 )
 
 
-report_start = mbna_8day_report["report_start"].iloc[0]
-report_end = mbna_8day_report["report_date"].iloc[0]
+# ==========================================================
+# 5. Convert rolling 8-day report to HTML
+# ==========================================================
 
-benchmark_start = mbna_8day_report["benchmark_start"].iloc[0]
-benchmark_end = mbna_8day_report["benchmark_end"].iloc[0]
-
-mbna_8day_html = f"""
-<h2>MBNA and Amazon: Rolling 8-Day Report</h2>
-
-<p>
-<b>Reporting Period:</b> {report_start} to {report_end}
-<br>
-<b>Benchmark Period:</b> {benchmark_start} to {benchmark_end}
-</p>
-
-{mbna_8day_table_html}
-
-<br><br>
-
-{mbna_8day_graphs_html}
-"""
+mbna_daily_table_html = (
+    mbna_8day_report
+    .drop(
+        columns=[
+            "report_date",
+            "report_start",
+            "benchmark_start",
+            "benchmark_end",
+            "channel_sort",
+            "province_sort"
+        ],
+        errors="ignore"
+    )
+    .to_html(index=False)
+)
 
 
+# ==========================================================
+# 6. Prepare email body
+# ==========================================================
+
+message_list = [
+
+    # ------------------------------------------------------
+    # Email introduction
+    # ------------------------------------------------------
+
+    """
+    <div style="
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 12px;
+        line-height: 1.4;
+        color: #222222;
+    ">
+
+    <p style="margin: 0 0 12px 0;">
+        Hi Team,
+    </p>
+
+    <p style="margin: 0 0 14px 0;">
+        Please find below the MBNA and Amazon application
+        monitoring report, providing a province-wise
+        breakdown of application volumes, credit limits,
+        alerts and confirmed frauds.
+    </p>
+
+    <p style="margin: 0 0 14px 0;">
+        The report includes month-to-date performance
+        against the historical six-month benchmark,
+        along with rolling eight-day performance against
+        the preceding 90-day benchmark.
+    </p>
+
+    <div style="
+        margin: 0 0 4px 0;
+        font-weight: 700;
+        font-size: 12px;
+    ">
+        Thresholds for Application, Alert and Fraud Counts:
+    </div>
+
+    <div style="margin: 0; line-height: 1.25;">
+
+        <div style="margin: 0;">
+            🟢 <b>Green:</b> Up to 25% above expected
+        </div>
+
+        <div style="margin: 0;">
+            🟠 <b>Yellow:</b> More than 25% and up to
+            50% above expected
+        </div>
+
+        <div style="margin: 0;">
+            🔴 <b>Red:</b> More than 50% above expected
+        </div>
+
+        <div style="margin: 0;">
+            If expected is zero, any positive actual
+            count is classified as Red.
+        </div>
+
+    </div>
+
+    </div>
+    """,
+
+    "<br><br>",
+
+    # ======================================================
+    # SECTION 1: MONTHLY REPORT
+    # ======================================================
+
+    f"""
+    <div style="
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 16px;
+        font-weight: bold;
+        color: #548235;
+        border-bottom: 2px solid #548235;
+        padding-bottom: 5px;
+        margin-bottom: 10px;
+    ">
+        1. MBNA and Amazon - Month-to-Date Report
+    </div>
+
+    <div style="
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 12px;
+        margin-bottom: 10px;
+    ">
+        <b>Reporting Period:</b>
+        {monthly_start:%B %d, %Y} to
+        {report_date:%B %d, %Y}
+        <br>
+        <b>Benchmark:</b>
+        Previous six completed calendar months
+    </div>
+    """,
+
+    "<b>MTD Application, Alert, Fraud and Credit Limit Summary</b>",
+
+    mbna_monthly_table_html,
+
+    "<br><br>",
+
+    # Monthly application count graph
+
+    mbna_application_html,
+
+    "<br><br>",
+
+    # Monthly alert count graph
+
+    mbna_alert_html,
+
+    "<br><br>",
+
+    # Monthly fraud count graph
+
+    mbna_fraud_html,
+
+    "<br><br>",
+
+    # ======================================================
+    # SECTION 2: DAILY MONITORING REPORT
+    # ======================================================
+
+    f"""
+    <div style="
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 16px;
+        font-weight: bold;
+        color: #548235;
+        border-bottom: 2px solid #548235;
+        padding-bottom: 5px;
+        margin-bottom: 10px;
+    ">
+        2. MBNA and Amazon - Rolling 8-Day Report
+    </div>
+
+    <div style="
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 12px;
+        margin-bottom: 10px;
+    ">
+        <b>Reporting Period:</b>
+        {daily_start:%B %d, %Y} to
+        {daily_end:%B %d, %Y}
+        <br>
+        <b>Benchmark Period:</b>
+        {benchmark_start:%B %d, %Y} to
+        {benchmark_end:%B %d, %Y}
+    </div>
+    """,
+
+    "<b>8-Day Application, Alert, Fraud and Credit Limit Summary</b>",
+
+    mbna_daily_table_html,
+
+    "<br><br>",
+
+    # Rolling 8-day application count graph
+
+    mbna_8day_application_html,
+
+    "<br><br>",
+
+    # Rolling 8-day alert count graph
+
+    mbna_8day_alert_html,
+
+    "<br><br>",
+
+    # Rolling 8-day fraud count graph
+
+    mbna_8day_fraud_html,
+
+    "<br><br>",
+
+    # ======================================================
+    # SECTION 3: REPORTING NOTES
+    # ======================================================
+
+    """
+    <div style="
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 12px;
+        line-height: 1.4;
+        color: #222222;
+        margin-top: 18px;
+    ">
+
+    <p style="margin: 0 0 8px 0;">
+        <b>Reporting Notes:</b>
+    </p>
+
+    <p style="margin: 0 0 4px 0;">
+        <b>Application Count:</b>
+        Includes all applications where credit was
+        requested and is not limited to applications
+        where credit was approved.
+    </p>
+
+    <p style="margin: 0 0 4px 0;">
+        <b>Alert Count:</b>
+        Includes distinct applications identified
+        through priority alerts or OM5 alerts.
+    </p>
+
+    <p style="margin: 0 0 4px 0;">
+        <b>Fraud Count:</b>
+        Includes distinct applications identified
+        as confirmed application fraud or associated
+        with a fraud claim.
+    </p>
+
+    <p style="margin: 0 0 4px 0;">
+        <b>Monthly Benchmark:</b>
+        Expected volumes are calculated using the
+        daily average of the previous six completed
+        calendar months, adjusted for the number
+        of elapsed days in the reporting month.
+    </p>
+
+    <p style="margin: 0 0 4px 0;">
+        <b>Rolling 8-Day Benchmark:</b>
+        Expected volumes are calculated using the
+        daily average of the 90 calendar days
+        immediately preceding the eight-day reporting
+        period, multiplied by eight.
+    </p>
+
+    <p style="margin: 0 0 4px 0;">
+        <b>Remaining Volumes:</b>
+        Remaining monthly application counts,
+        alert counts, fraud counts and credit limits
+        are estimated using the historical six-month
+        daily average and the number of remaining
+        days in the reporting month.
+    </p>
+
+    <p style="margin: 0 0 4px 0;">
+        <b>Fraud Maturity:</b>
+        Recent fraud counts may be understated due
+        to the time required for fraud identification
+        and claims reporting. Alerts and frauds are
+        reported based on application date.
+    </p>
+
+    <p style="margin: 0 0 12px 0;">
+        <b>Data Source:</b>
+        MBNA application data is sourced from FIQM.
+        Alert and fraud indicators are sourced from
+        priority alerts, OM5 alerts and fraud claims data.
+    </p>
+
+    <p style="margin: 0;">
+        Thanks,
+    </p>
+
+    </div>
+    """
+]
+
+
+# ==========================================================
+# 7. Send email notification
+# ==========================================================
+
+# Retain your existing recipient_list.
+
+notification.multiline_notification(
+    message_list=message_list,
+    subject=subject,
+    recipient_list=recipient_list,
+    data_frame=None
+)
+
+print("MBNA and Amazon monitoring notification completed.")
