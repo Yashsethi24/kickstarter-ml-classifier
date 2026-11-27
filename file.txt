@@ -1,431 +1,286 @@
-mbna_report = f"""
-WITH parameters AS (
-    SELECT
-        DATE_SUB(CURRENT_DATE(), 1) AS report_date,
-
-        TRUNC(DATE_SUB(CURRENT_DATE(), 1), 'MM')
-            AS current_month_start,
-
-        ADD_MONTHS(
-            TRUNC(DATE_SUB(CURRENT_DATE(), 1), 'MM'), -6
-        ) AS benchmark_start,
-
-        TRUNC(DATE_SUB(CURRENT_DATE(), 1), 'MM')
-            AS benchmark_end,
-
-        DAY(DATE_SUB(CURRENT_DATE(), 1)) AS report_day,
-
-        DATEDIFF(
-            TRUNC(DATE_SUB(CURRENT_DATE(), 1), 'MM'),
-            ADD_MONTHS(
-                TRUNC(DATE_SUB(CURRENT_DATE(), 1), 'MM'), -6
-            )
-        ) AS benchmark_days
-),
-
-base_data AS (
-    SELECT
-        TO_DATE(Application_Date) AS application_date,
-
-        CASE
-            WHEN UPPER(TRIM(Address_Province))
-                IN ('ON', 'ONTARIO') THEN 'ON'
-
-            WHEN UPPER(TRIM(Address_Province))
-                IN ('QC', 'PQ', 'QUEBEC', 'QUÉBEC') THEN 'QC'
-
-            WHEN UPPER(TRIM(Address_Province))
-                IN ('AB', 'ALBERTA') THEN 'AB'
-
-            WHEN UPPER(TRIM(Address_Province))
-                IN ('BC', 'BRITISH COLUMBIA') THEN 'BC'
-
-            ELSE 'Others'
-        END AS province_group,
-
-        CASE
-            WHEN Transit_Number = 'AMAZXX' THEN 'AMAZON'
-            ELSE 'MBNA'
-        END AS channel,
-
-        CAST(Application_Number AS STRING)
-            AS application_number,
-
-        COALESCE(
-            TRY_CAST(
-                REGEXP_REPLACE(
-                    CAST(Credit_Limit AS STRING), ',', ''
-                ) AS DECIMAL(18, 2)
-            ), 0
-        ) AS credit_limit
-
-    FROM hive_metastore.fiqm.applications
-
-    WHERE Product_Type = 'PUCC'
-        AND DATA_SOURCE = 'MBNA'
-        AND Application_Number IS NOT NULL
-        AND Application_Number RLIKE '^[A-E]'
-        AND TO_DATE(Application_Date) IS NOT NULL
-),
-
--- Aggregate claims data to avoid duplication during joins
-
-claims_data AS (
-    SELECT
-        Application_Number,
-
-        MAX(
-            CASE WHEN priority_alert_ind = 1
-                THEN 1 ELSE 0
-            END
-        ) AS priority_alert_ind,
-
-        MAX(
-            CASE WHEN CONF_APP_FRAUD = 1 OR claim_ind = 1
-                THEN 1 ELSE 0
-            END
-        ) AS fraud_ind
-
-    FROM claims_final_ss11
-    GROUP BY Application_Number
-),
-
-om5_data AS (
-    SELECT DISTINCT Application_Number
-    FROM om5_alerts
-),
-
--- Add alert and fraud indicators
-
-base_w_alerts AS (
-    SELECT
-        a.*,
-
-        COALESCE(b.priority_alert_ind, 0)
-            AS priority_alert_ind,
-
-        CASE
-            WHEN c.Application_Number IS NOT NULL
-                THEN 1
-            ELSE 0
-        END AS OM5_Alert,
-
-        COALESCE(b.fraud_ind, 0) AS fraud_ind
-
-    FROM base_data a
-
-    LEFT JOIN claims_data b
-        ON a.Application_Number = b.Application_Number
-
-    LEFT JOIN om5_data c
-        ON a.Application_Number = c.Application_Number
-),
-
-channel_data AS (
-    SELECT
-        *,
-
-        CASE
-            WHEN OM5_Alert = 1 OR priority_alert_ind = 1
-                THEN 1
-            ELSE 0
-        END AS alert_ind
-
-    FROM base_w_alerts
-
-    WHERE channel IN ('MBNA', 'AMAZON')
-),
-
--- Six-month historical benchmark
-
-benchmark AS (
-    SELECT
-        b.channel,
-        b.province_group,
-
-        COUNT(DISTINCT b.application_number)
-            AS six_month_application_count,
-
-        SUM(b.credit_limit)
-            AS six_month_credit_limit,
-
-        COUNT(DISTINCT CASE
-            WHEN b.alert_ind = 1
-            THEN b.application_number
-        END) AS six_month_alerts_count,
-
-        COUNT(DISTINCT CASE
-            WHEN b.fraud_ind = 1
-            THEN b.application_number
-        END) AS six_month_frauds_count
-
-    FROM channel_data b
-    CROSS JOIN parameters p
-
-    WHERE b.application_date >= p.benchmark_start
-        AND b.application_date < p.benchmark_end
-
-    GROUP BY
-        b.channel,
-        b.province_group
-),
-
--- Month-to-date actual metrics
-
-mtd_actual AS (
-    SELECT
-        b.channel,
-        b.province_group,
-
-        COUNT(DISTINCT b.application_number)
-            AS mtd_actual_application_count,
-
-        SUM(b.credit_limit)
-            AS mtd_actual_credit_limit,
-
-        COUNT(DISTINCT CASE
-            WHEN b.alert_ind = 1
-            THEN b.application_number
-        END) AS mtd_actual_alerts_count,
-
-        COUNT(DISTINCT CASE
-            WHEN b.fraud_ind = 1
-            THEN b.application_number
-        END) AS mtd_actual_frauds_count
-
-    FROM channel_data b
-    CROSS JOIN parameters p
-
-    WHERE b.application_date >= p.current_month_start
-        AND b.application_date <= p.report_date
-
-    GROUP BY
-        b.channel,
-        b.province_group
-),
-
-channel_list AS (
-    SELECT channel
-    FROM VALUES
-        ('MBNA'),
-        ('AMAZON')
-    AS channel_list(channel)
-),
-
-province_list AS (
-    SELECT province_group
-    FROM VALUES
-        ('ON'),
-        ('QC'),
-        ('AB'),
-        ('BC'),
-        ('Others')
-    AS province_list(province_group)
-),
-
-report_groups AS (
-    SELECT
-        c.channel,
-        g.province_group
-
-    FROM channel_list c
-    CROSS JOIN province_list g
-),
-
-report_metrics AS (
-    SELECT
-        p.report_date,
-        rg.channel,
-        rg.province_group,
-
-        -- APPLICATION VOLUME METRICS
-
-        CAST(
-            COALESCE(m.mtd_actual_application_count, 0)
-        AS INT) AS mtd_actual_application_count,
-
-        CAST(ROUND(
-            COALESCE(b.six_month_application_count, 0)
-            / NULLIF(p.benchmark_days, 0)
-            * p.report_day, 0
-        ) AS INT) AS mtd_expected_application_count,
-
-        CAST(ROUND(
-            COALESCE(b.six_month_application_count, 0)
-            / NULLIF(p.benchmark_days, 0)
-            * GREATEST(
-                DAY(LAST_DAY(p.report_date)) - p.report_day, 0
-            ), 0
-        ) AS INT) AS remaining_application_count,
-
-        -- CREDIT LIMIT METRICS
-
-        CONCAT(
-            '$',
-            FORMAT_NUMBER(
-                COALESCE(m.mtd_actual_credit_limit, 0), 0
-            )
-        ) AS mtd_actual_credit_limit,
-
-        CONCAT(
-            '$',
-            FORMAT_NUMBER(
-                COALESCE(b.six_month_credit_limit, 0)
-                / NULLIF(p.benchmark_days, 0)
-                * p.report_day, 0
-            )
-        ) AS mtd_expected_credit_limit,
-
-        CONCAT(
-            '$',
-            FORMAT_NUMBER(
-                COALESCE(b.six_month_credit_limit, 0)
-                / NULLIF(p.benchmark_days, 0)
-                * GREATEST(
-                    DAY(LAST_DAY(p.report_date))
-                    - p.report_day, 0
-                ), 0
-            )
-        ) AS remaining_credit_limit,
-
-        -- ALERT VOLUME METRICS
-
-        CAST(
-            COALESCE(m.mtd_actual_alerts_count, 0)
-        AS INT) AS mtd_actual_alerts_count,
-
-        CAST(ROUND(
-            COALESCE(b.six_month_alerts_count, 0)
-            / NULLIF(p.benchmark_days, 0)
-            * p.report_day, 0
-        ) AS INT) AS mtd_expected_alerts_count,
-
-        CAST(ROUND(
-            COALESCE(b.six_month_alerts_count, 0)
-            / NULLIF(p.benchmark_days, 0)
-            * GREATEST(
-                DAY(LAST_DAY(p.report_date)) - p.report_day, 0
-            ), 0
-        ) AS INT) AS remaining_alerts_count,
-
-        -- FRAUD VOLUME METRICS
-
-        CAST(
-            COALESCE(m.mtd_actual_frauds_count, 0)
-        AS INT) AS mtd_actual_frauds_count,
-
-        CAST(ROUND(
-            COALESCE(b.six_month_frauds_count, 0)
-            / NULLIF(p.benchmark_days, 0)
-            * p.report_day, 0
-        ) AS INT) AS mtd_expected_frauds_count,
-
-        CAST(ROUND(
-            COALESCE(b.six_month_frauds_count, 0)
-            / NULLIF(p.benchmark_days, 0)
-            * GREATEST(
-                DAY(LAST_DAY(p.report_date)) - p.report_day, 0
-            ), 0
-        ) AS INT) AS remaining_frauds_count
-
-    FROM report_groups rg
-    CROSS JOIN parameters p
-
-    LEFT JOIN benchmark b
-        ON rg.channel = b.channel
-        AND rg.province_group = b.province_group
-
-    LEFT JOIN mtd_actual m
-        ON rg.channel = m.channel
-        AND rg.province_group = m.province_group
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from matplotlib.ticker import FuncFormatter
+
+plt.rcParams["font.family"] = "DejaVu Sans"
+
+# ----------------------------------------------------------
+# 1. Clean the existing channel and province columns
+# ----------------------------------------------------------
+mbna_report["channel"] = (
+    mbna_report["channel"]
+    .astype(str)
+    .str.strip()
+    .str.upper()
 )
 
-SELECT
-    *,
+mbna_report["province_group"] = (
+    mbna_report["province_group"]
+    .astype(str)
+    .str.strip()
+    .str.upper()
+    .replace({
+        "ONTARIO": "ON",
+        "QUEBEC": "QC",
+        "QUÉBEC": "QC",
+        "PQ": "QC",
+        "ALBERTA": "AB",
+        "BRITISH COLUMBIA": "BC",
+        "OTHER": "OTHERS"
+    })
+)
 
-    -- APPLICATION THRESHOLD
+# ----------------------------------------------------------
+# 2. Create temporary sort columns
+# ----------------------------------------------------------
+channel_sort_order = {
+    "MBNA": 1,
+    "AMAZON": 2
+}
 
-    CASE
-        WHEN mtd_expected_application_count = 0
-            AND mtd_actual_application_count = 0
-            THEN '🟢Green'
+province_sort_order = {
+    "ON": 1,
+    "QC": 2,
+    "AB": 3,
+    "BC": 4,
+    "OTHERS": 5
+}
 
-        WHEN mtd_expected_application_count = 0
-            AND mtd_actual_application_count > 0
-            THEN '🔴Red'
+mbna_report["channel_sort"] = mbna_report["channel"].map(channel_sort_order)
+mbna_report["province_sort"] = mbna_report["province_group"].map(province_sort_order)
 
-        WHEN mtd_actual_application_count
-            <= mtd_expected_application_count * 1.25
-            THEN '🟢Green'
+# Sort MBNA first and AMAZON second
+# Province order: ON, QC, AB, BC, Others
+mbna_report.sort_values(
+    ["channel_sort", "province_sort"],
+    inplace=True
+)
 
-        WHEN mtd_actual_application_count
-            <= mtd_expected_application_count * 1.50
-            THEN '🟠Yellow'
+mbna_report.reset_index(drop=True, inplace=True)
 
-        ELSE '🔴Red'
-    END AS Threshold,
+# ----------------------------------------------------------
+# 3. Reusable plotting function
+# ----------------------------------------------------------
+def plot_metric_comparison(
+    df,
+    actual_col,
+    expected_col,
+    title,
+    y_label,
+    actual_label="MTD Actual",
+    expected_label="MTD Expected"
+):
+    province_labels = (
+        df["province_group"]
+        .replace({"OTHERS": "Others"})
+        .tolist()
+    )
 
-    -- ALERT THRESHOLD
+    actual_values = (
+        pd.to_numeric(df[actual_col], errors="coerce")
+        .fillna(0)
+        .to_numpy()
+    )
 
-    CASE
-        WHEN mtd_expected_alerts_count = 0
-            AND mtd_actual_alerts_count = 0
-            THEN '🟢Green'
+    expected_values = (
+        pd.to_numeric(df[expected_col], errors="coerce")
+        .fillna(0)
+        .to_numpy()
+    )
 
-        WHEN mtd_expected_alerts_count = 0
-            AND mtd_actual_alerts_count > 0
-            THEN '🔴Red'
+    x = np.arange(len(df))
+    bar_width = 0.30
 
-        WHEN mtd_actual_alerts_count
-            <= mtd_expected_alerts_count * 1.25
-            THEN '🟢Green'
+    # Find where MBNA ends and AMAZON begins
+    mbna_count = (df["channel"] == "MBNA").sum()
+    separator_position = mbna_count - 0.5
 
-        WHEN mtd_actual_alerts_count
-            <= mtd_expected_alerts_count * 1.50
-            THEN '🟠Yellow'
+    # Create the graph
+    fig, ax = plt.subplots(
+        figsize=(15, 7),
+        facecolor="#F2F2F2"
+    )
 
-        ELSE '🔴Red'
-    END AS Alerts_Threshold,
+    ax.set_facecolor("#FCFCFC")
 
-    -- FRAUD THRESHOLD
+    actual_bars = ax.bar(
+        x - bar_width / 2,
+        actual_values,
+        width=bar_width,
+        label=actual_label,
+        color="#548235",
+        edgecolor="grey",
+        linewidth=1.2
+    )
 
-    CASE
-        WHEN mtd_expected_frauds_count = 0
-            AND mtd_actual_frauds_count = 0
-            THEN '🟢Green'
+    expected_bars = ax.bar(
+        x + bar_width / 2,
+        expected_values,
+        width=bar_width,
+        label=expected_label,
+        color="#A9D18E",
+        edgecolor="grey",
+        linewidth=1.2
+    )
 
-        WHEN mtd_expected_frauds_count = 0
-            AND mtd_actual_frauds_count > 0
-            THEN '🔴Red'
+    # Title and axis labels
+    ax.set_title(
+        title,
+        fontsize=12
+    )
 
-        WHEN mtd_actual_frauds_count
-            <= mtd_expected_frauds_count * 1.25
-            THEN '🟢Green'
+    ax.set_xlabel(
+        "Province",
+        fontsize=10,
+        labelpad=8
+    )
 
-        WHEN mtd_actual_frauds_count
-            <= mtd_expected_frauds_count * 1.50
-            THEN '🟠Yellow'
+    ax.set_ylabel(
+        y_label,
+        fontsize=10,
+        labelpad=8
+    )
 
-        ELSE '🔴Red'
-    END AS Frauds_Threshold
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        province_labels,
+        fontsize=9
+    )
 
-FROM report_metrics
+    ax.yaxis.set_major_formatter(
+        FuncFormatter(lambda value, position: f"{value:,.0f}")
+    )
 
-ORDER BY
-    CASE channel
-        WHEN 'MBNA' THEN 1
-        WHEN 'AMAZON' THEN 2
-        ELSE 3
-    END,
+    ax.tick_params(
+        axis="y",
+        labelsize=9
+    )
 
-    CASE province_group
-        WHEN 'ON' THEN 1
-        WHEN 'QC' THEN 2
-        WHEN 'AB' THEN 3
-        WHEN 'BC' THEN 4
-        ELSE 5
-    END
-"""
+    # Add separator between MBNA and AMAZON
+    ax.axvline(
+        x=separator_position,
+        color="#7A7A7A",
+        linestyle="--",
+        linewidth=1.2
+    )
 
-mbna_report = spark.sql(mbna_report)
-mbna_report = mbna_report.toPandas()
+    # Add channel headings
+    max_value = max(
+        actual_values.max() if len(actual_values) > 0 else 0,
+        expected_values.max() if len(expected_values) > 0 else 0
+    )
+
+    ax.set_ylim(0, max_value * 1.22 if max_value > 0 else 1)
+
+    mbna_center = (mbna_count - 1) / 2 if mbna_count > 0 else 0
+    amazon_count = len(df) - mbna_count
+    amazon_center = mbna_count + (amazon_count - 1) / 2 if amazon_count > 0 else mbna_count
+
+    if mbna_count > 0:
+        ax.text(
+            mbna_center,
+            max_value * 1.14 if max_value > 0 else 0.5,
+            "MBNA",
+            ha="center",
+            fontsize=12,
+            fontweight="bold"
+        )
+
+    if amazon_count > 0:
+        ax.text(
+            amazon_center,
+            max_value * 1.14 if max_value > 0 else 0.5,
+            "AMAZON",
+            ha="center",
+            fontsize=12,
+            fontweight="bold"
+        )
+
+    # Legend, grid and borders
+    ax.legend()
+    ax.grid(axis="y", alpha=0.25)
+
+    ax.grid(
+        axis="y",
+        linestyle="--",
+        linewidth=0.7,
+        alpha=0.25
+    )
+
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_alpha(0.4)
+    ax.spines["bottom"].set_alpha(0.4)
+
+    # Add smaller bar labels
+    actual_labels = ax.bar_label(
+        actual_bars,
+        labels=[f"{value:,.0f}" for value in actual_values],
+        padding=3,
+        fontsize=10,
+        fontweight="normal"
+    )
+
+    expected_labels = ax.bar_label(
+        expected_bars,
+        labels=[f"{value:,.0f}" for value in expected_values],
+        padding=3,
+        fontsize=10,
+        fontweight="normal"
+    )
+
+    # Move labels slightly apart
+    for label in actual_labels:
+        x_position, y_position = label.get_position()
+        label.set_position((x_position - 2, y_position))
+
+    for label in expected_labels:
+        x_position, y_position = label.get_position()
+        label.set_position((x_position + 2, y_position))
+
+    plt.tight_layout()
+    plt.show()
+
+
+# ----------------------------------------------------------
+# 4. Application Count Graph
+# ----------------------------------------------------------
+plot_metric_comparison(
+    df=mbna_report,
+    actual_col="mtd_actual_application_count",
+    expected_col="mtd_expected_application_count",
+    title="MBNA and Amazon Application Count: Actual vs Expected",
+    y_label="Application Count"
+)
+
+# ----------------------------------------------------------
+# 5. Alert Count Graph
+# ----------------------------------------------------------
+plot_metric_comparison(
+    df=mbna_report,
+    actual_col="mtd_actual_alerts_count",
+    expected_col="mtd_expected_alerts_count",
+    title="MBNA and Amazon Alert Count: Actual vs Expected",
+    y_label="Alert Count"
+)
+
+# ----------------------------------------------------------
+# 6. Fraud Count Graph
+# ----------------------------------------------------------
+plot_metric_comparison(
+    df=mbna_report,
+    actual_col="mtd_actual_frauds_count",
+    expected_col="mtd_expected_frauds_count",
+    title="MBNA and Amazon Fraud Count: Actual vs Expected",
+    y_label="Fraud Count"
+)
+
+# ----------------------------------------------------------
+# 7. Remove temp columns
+# ----------------------------------------------------------
+mbna_report.drop(
+    columns=["channel_sort", "province_sort"],
+    inplace=True
+)
