@@ -1,391 +1,540 @@
-import os
-import base64
-from io import BytesIO
+mbna_8day_report = f"""
+WITH parameters AS (
+    SELECT
+        DATE_SUB(CURRENT_DATE(), 1) AS report_date,
+        DATE_SUB(CURRENT_DATE(), 8) AS report_start,
+        DATE_SUB(CURRENT_DATE(), 98) AS benchmark_start,
+        DATE_SUB(CURRENT_DATE(), 9) AS benchmark_end,
+        8 AS report_days,
+        90 AS benchmark_days
+),
 
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-from matplotlib.ticker import FuncFormatter
+base_data AS (
+    SELECT
+        TO_DATE(Application_Date) AS application_date,
 
-plt.rcParams["font.family"] = "DejaVu Sans"
+        CASE
+            WHEN UPPER(TRIM(Address_Province))
+                IN ('ON', 'ONTARIO') THEN 'ON'
 
-# ----------------------------------------------------------
-# 1. Clean the existing channel and province columns
-# ----------------------------------------------------------
-mbna_report["channel"] = (
-    mbna_report["channel"]
-    .astype(str)
-    .str.strip()
-    .str.upper()
+            WHEN UPPER(TRIM(Address_Province))
+                IN ('QC', 'PQ', 'QUEBEC', 'QUÉBEC') THEN 'QC'
+
+            WHEN UPPER(TRIM(Address_Province))
+                IN ('AB', 'ALBERTA') THEN 'AB'
+
+            WHEN UPPER(TRIM(Address_Province))
+                IN ('BC', 'BRITISH COLUMBIA') THEN 'BC'
+
+            ELSE 'Others'
+        END AS province_group,
+
+        CASE
+            WHEN Transit_Number = 'AMAZXX' THEN 'AMAZON'
+            ELSE 'MBNA'
+        END AS channel,
+
+        CAST(Application_Number AS STRING)
+            AS application_number,
+
+        COALESCE(
+            TRY_CAST(
+                REGEXP_REPLACE(
+                    CAST(Credit_Limit AS STRING), ',', ''
+                ) AS DECIMAL(18, 2)
+            ), 0
+        ) AS credit_limit
+
+    FROM hive_metastore.fiqm.applications
+
+    WHERE Product_Type = 'PUCC'
+        AND DATA_SOURCE = 'MBNA'
+        AND Application_Number IS NOT NULL
+        AND Application_Number RLIKE '^[A-E]'
+        AND TO_DATE(Application_Date) BETWEEN
+            DATE_SUB(CURRENT_DATE(), 98)
+            AND DATE_SUB(CURRENT_DATE(), 1)
+),
+
+-- Aggregate claims data to avoid duplicates
+
+claims_data AS (
+    SELECT
+        CAST(Application_Number AS STRING)
+            AS application_number,
+
+        MAX(
+            CASE
+                WHEN priority_alert_ind = 1 THEN 1
+                ELSE 0
+            END
+        ) AS priority_alert_ind,
+
+        MAX(
+            CASE
+                WHEN CONF_APP_FRAUD = 1 OR claim_ind = 1
+                    THEN 1
+                ELSE 0
+            END
+        ) AS fraud_ind
+
+    FROM claims_final_ss11
+
+    GROUP BY CAST(Application_Number AS STRING)
+),
+
+om5_data AS (
+    SELECT DISTINCT
+        CAST(Application_Number AS STRING)
+            AS application_number
+
+    FROM om5_alerts
+),
+
+-- Add alert and fraud indicators
+
+base_w_alerts AS (
+    SELECT
+        a.*,
+
+        COALESCE(b.priority_alert_ind, 0)
+            AS priority_alert_ind,
+
+        CASE
+            WHEN c.application_number IS NOT NULL
+                THEN 1
+            ELSE 0
+        END AS OM5_Alert,
+
+        COALESCE(b.fraud_ind, 0) AS fraud_ind
+
+    FROM base_data a
+
+    LEFT JOIN claims_data b
+        ON a.application_number = b.application_number
+
+    LEFT JOIN om5_data c
+        ON a.application_number = c.application_number
+),
+
+channel_data AS (
+    SELECT
+        *,
+
+        CASE
+            WHEN OM5_Alert = 1 OR priority_alert_ind = 1
+                THEN 1
+            ELSE 0
+        END AS alert_ind
+
+    FROM base_w_alerts
+
+    WHERE channel IN ('MBNA', 'AMAZON')
+),
+
+-- Previous 90-day historical benchmark
+
+benchmark AS (
+    SELECT
+        b.channel,
+        b.province_group,
+
+        COUNT(DISTINCT b.application_number)
+            AS benchmark_application_count,
+
+        SUM(b.credit_limit)
+            AS benchmark_credit_limit,
+
+        COUNT(DISTINCT CASE
+            WHEN b.alert_ind = 1
+            THEN b.application_number
+        END) AS benchmark_alerts_count,
+
+        COUNT(DISTINCT CASE
+            WHEN b.fraud_ind = 1
+            THEN b.application_number
+        END) AS benchmark_frauds_count
+
+    FROM channel_data b
+    CROSS JOIN parameters p
+
+    WHERE b.application_date BETWEEN
+        p.benchmark_start AND p.benchmark_end
+
+    GROUP BY
+        b.channel,
+        b.province_group
+),
+
+-- Actual metrics for the last 8 days
+
+last_8days_actual AS (
+    SELECT
+        b.channel,
+        b.province_group,
+
+        COUNT(DISTINCT b.application_number)
+            AS actual_application_count,
+
+        SUM(b.credit_limit)
+            AS actual_credit_limit,
+
+        COUNT(DISTINCT CASE
+            WHEN b.alert_ind = 1
+            THEN b.application_number
+        END) AS actual_alerts_count,
+
+        COUNT(DISTINCT CASE
+            WHEN b.fraud_ind = 1
+            THEN b.application_number
+        END) AS actual_frauds_count
+
+    FROM channel_data b
+    CROSS JOIN parameters p
+
+    WHERE b.application_date BETWEEN
+        p.report_start AND p.report_date
+
+    GROUP BY
+        b.channel,
+        b.province_group
+),
+
+channel_list AS (
+    SELECT channel
+    FROM VALUES
+        ('MBNA'),
+        ('AMAZON')
+    AS channel_list(channel)
+),
+
+province_list AS (
+    SELECT province_group
+    FROM VALUES
+        ('ON'),
+        ('QC'),
+        ('AB'),
+        ('BC'),
+        ('Others')
+    AS province_list(province_group)
+),
+
+report_groups AS (
+    SELECT
+        c.channel,
+        g.province_group
+
+    FROM channel_list c
+    CROSS JOIN province_list g
+),
+
+report_metrics AS (
+    SELECT
+        p.report_date,
+        p.report_start,
+        p.benchmark_start,
+        p.benchmark_end,
+
+        rg.channel,
+        rg.province_group,
+
+        -- APPLICATION COUNT
+
+        CAST(
+            COALESCE(a.actual_application_count, 0)
+        AS INT) AS actual_application_count,
+
+        CAST(ROUND(
+            COALESCE(b.benchmark_application_count, 0)
+            / NULLIF(p.benchmark_days, 0)
+            * p.report_days, 0
+        ) AS INT) AS expected_application_count,
+
+        -- CREDIT LIMIT
+
+        CONCAT(
+            '$',
+            FORMAT_NUMBER(
+                COALESCE(a.actual_credit_limit, 0), 0
+            )
+        ) AS actual_credit_limit,
+
+        CONCAT(
+            '$',
+            FORMAT_NUMBER(
+                COALESCE(b.benchmark_credit_limit, 0)
+                / NULLIF(p.benchmark_days, 0)
+                * p.report_days, 0
+            )
+        ) AS expected_credit_limit,
+
+        -- ALERT COUNT
+
+        CAST(
+            COALESCE(a.actual_alerts_count, 0)
+        AS INT) AS actual_alerts_count,
+
+        CAST(ROUND(
+            COALESCE(b.benchmark_alerts_count, 0)
+            / NULLIF(p.benchmark_days, 0)
+            * p.report_days, 0
+        ) AS INT) AS expected_alerts_count,
+
+        -- FRAUD COUNT
+
+        CAST(
+            COALESCE(a.actual_frauds_count, 0)
+        AS INT) AS actual_frauds_count,
+
+        CAST(ROUND(
+            COALESCE(b.benchmark_frauds_count, 0)
+            / NULLIF(p.benchmark_days, 0)
+            * p.report_days, 0
+        ) AS INT) AS expected_frauds_count
+
+    FROM report_groups rg
+    CROSS JOIN parameters p
+
+    LEFT JOIN benchmark b
+        ON rg.channel = b.channel
+        AND rg.province_group = b.province_group
+
+    LEFT JOIN last_8days_actual a
+        ON rg.channel = a.channel
+        AND rg.province_group = a.province_group
 )
 
-mbna_report["province_group"] = (
-    mbna_report["province_group"]
-    .astype(str)
-    .str.strip()
-    .str.upper()
-    .replace({
-        "ONTARIO": "ON",
-        "QUEBEC": "QC",
-        "QUÉBEC": "QC",
-        "PQ": "QC",
-        "ALBERTA": "AB",
-        "BRITISH COLUMBIA": "BC",
-        "OTHER": "OTHERS"
-    })
-)
+SELECT
+    *,
 
-# ----------------------------------------------------------
-# 2. Create temporary sort columns
-# ----------------------------------------------------------
-channel_sort_order = {
-    "MBNA": 1,
-    "AMAZON": 2
-}
+    -- APPLICATION THRESHOLD
 
-province_sort_order = {
-    "ON": 1,
-    "QC": 2,
-    "AB": 3,
-    "BC": 4,
-    "OTHERS": 5
-}
+    CASE
+        WHEN expected_application_count = 0
+            AND actual_application_count = 0
+            THEN '🟢Green'
 
-mbna_report["channel_sort"] = mbna_report["channel"].map(channel_sort_order)
-mbna_report["province_sort"] = mbna_report["province_group"].map(province_sort_order)
+        WHEN expected_application_count = 0
+            AND actual_application_count > 0
+            THEN '🔴Red'
 
-mbna_report.sort_values(
-    ["channel_sort", "province_sort"],
-    inplace=True
-)
+        WHEN actual_application_count
+            <= expected_application_count * 1.25
+            THEN '🟢Green'
 
-mbna_report.reset_index(drop=True, inplace=True)
+        WHEN actual_application_count
+            <= expected_application_count * 1.50
+            THEN '🟠Yellow'
 
-# ----------------------------------------------------------
-# 3. Folder where graphs will be saved
-#    Change this path if you want another location
-# ----------------------------------------------------------
-output_dir = "mbna_graphs"
-os.makedirs(output_dir, exist_ok=True)
+        ELSE '🔴Red'
+    END AS Threshold,
 
-# ----------------------------------------------------------
-# 4. Reusable plotting function
-# ----------------------------------------------------------
-def plot_metric_comparison(
-    df,
-    actual_col,
-    expected_col,
-    title,
-    y_label,
-    save_filename,
-    actual_label="MTD Actual",
-    expected_label="MTD Expected",
-    show_plot=True
-):
-    province_labels = (
-        df["province_group"]
-        .replace({"OTHERS": "Others"})
-        .tolist()
-    )
+    -- ALERT THRESHOLD
 
-    actual_values = (
-        pd.to_numeric(df[actual_col], errors="coerce")
-        .fillna(0)
-        .to_numpy()
-    )
+    CASE
+        WHEN expected_alerts_count = 0
+            AND actual_alerts_count = 0
+            THEN '🟢Green'
 
-    expected_values = (
-        pd.to_numeric(df[expected_col], errors="coerce")
-        .fillna(0)
-        .to_numpy()
-    )
+        WHEN expected_alerts_count = 0
+            AND actual_alerts_count > 0
+            THEN '🔴Red'
 
-    x = np.arange(len(df))
-    bar_width = 0.30
+        WHEN actual_alerts_count
+            <= expected_alerts_count * 1.25
+            THEN '🟢Green'
 
-    # Find where MBNA ends and AMAZON begins
-    mbna_count = (df["channel"] == "MBNA").sum()
-    separator_position = mbna_count - 0.5
+        WHEN actual_alerts_count
+            <= expected_alerts_count * 1.50
+            THEN '🟠Yellow'
 
-    # Create the graph
-    fig, ax = plt.subplots(
-        figsize=(15, 7),
-        facecolor="#F2F2F2"
-    )
+        ELSE '🔴Red'
+    END AS Alerts_Threshold,
 
-    ax.set_facecolor("#FCFCFC")
+    -- FRAUD THRESHOLD
 
-    actual_bars = ax.bar(
-        x - bar_width / 2,
-        actual_values,
-        width=bar_width,
-        label=actual_label,
-        color="#548235",
-        edgecolor="grey",
-        linewidth=1.2
-    )
+    CASE
+        WHEN expected_frauds_count = 0
+            AND actual_frauds_count = 0
+            THEN '🟢Green'
 
-    expected_bars = ax.bar(
-        x + bar_width / 2,
-        expected_values,
-        width=bar_width,
-        label=expected_label,
-        color="#A9D18E",
-        edgecolor="grey",
-        linewidth=1.2
-    )
+        WHEN expected_frauds_count = 0
+            AND actual_frauds_count > 0
+            THEN '🔴Red'
 
-    # Title and axis labels
-    ax.set_title(
-        title,
-        fontsize=12
-    )
+        WHEN actual_frauds_count
+            <= expected_frauds_count * 1.25
+            THEN '🟢Green'
 
-    ax.set_xlabel(
-        "Province",
-        fontsize=10,
-        labelpad=8
-    )
+        WHEN actual_frauds_count
+            <= expected_frauds_count * 1.50
+            THEN '🟠Yellow'
 
-    ax.set_ylabel(
-        y_label,
-        fontsize=10,
-        labelpad=8
-    )
+        ELSE '🔴Red'
+    END AS Frauds_Threshold
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(
-        province_labels,
-        fontsize=9
-    )
+FROM report_metrics
 
-    ax.yaxis.set_major_formatter(
-        FuncFormatter(lambda value, position: f"{value:,.0f}")
-    )
+ORDER BY
+    CASE channel
+        WHEN 'MBNA' THEN 1
+        WHEN 'AMAZON' THEN 2
+        ELSE 3
+    END,
 
-    ax.tick_params(
-        axis="y",
-        labelsize=9
-    )
-
-    # Add separator between MBNA and AMAZON
-    ax.axvline(
-        x=separator_position,
-        color="#7A7A7A",
-        linestyle="--",
-        linewidth=1.2
-    )
-
-    # Add channel headings
-    max_value = max(
-        actual_values.max() if len(actual_values) > 0 else 0,
-        expected_values.max() if len(expected_values) > 0 else 0
-    )
-
-    upper_limit = max_value * 1.22 if max_value > 0 else 1
-    ax.set_ylim(0, upper_limit)
-
-    mbna_center = (mbna_count - 1) / 2 if mbna_count > 0 else 0
-    amazon_count = len(df) - mbna_count
-    amazon_center = mbna_count + (amazon_count - 1) / 2 if amazon_count > 0 else mbna_count
-
-    if mbna_count > 0:
-        ax.text(
-            mbna_center,
-            max_value * 1.14 if max_value > 0 else 0.5,
-            "MBNA",
-            ha="center",
-            fontsize=12,
-            fontweight="bold"
-        )
-
-    if amazon_count > 0:
-        ax.text(
-            amazon_center,
-            max_value * 1.14 if max_value > 0 else 0.5,
-            "AMAZON",
-            ha="center",
-            fontsize=12,
-            fontweight="bold"
-        )
-
-    # Legend, grid and borders
-    ax.legend()
-    ax.grid(axis="y", alpha=0.25)
-
-    ax.grid(
-        axis="y",
-        linestyle="--",
-        linewidth=0.7,
-        alpha=0.25
-    )
-
-    ax.set_axisbelow(True)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_alpha(0.4)
-    ax.spines["bottom"].set_alpha(0.4)
-
-    # Add bar labels
-    actual_labels = ax.bar_label(
-        actual_bars,
-        labels=[f"{value:,.0f}" for value in actual_values],
-        padding=3,
-        fontsize=10,
-        fontweight="normal"
-    )
-
-    expected_labels = ax.bar_label(
-        expected_bars,
-        labels=[f"{value:,.0f}" for value in expected_values],
-        padding=3,
-        fontsize=10,
-        fontweight="normal"
-    )
-
-    # Move labels slightly apart
-    for label in actual_labels:
-        x_position, y_position = label.get_position()
-        label.set_position((x_position - 2, y_position))
-
-    for label in expected_labels:
-        x_position, y_position = label.get_position()
-        label.set_position((x_position + 2, y_position))
-
-    fig.tight_layout()
-
-    # ------------------------------------------------------
-    # Save graph as PNG file
-    # ------------------------------------------------------
-    save_path = os.path.join(output_dir, save_filename)
-    fig.savefig(
-        save_path,
-        format="png",
-        dpi=150,
-        bbox_inches="tight"
-    )
-
-    # ------------------------------------------------------
-    # Save graph into memory and encode as base64
-    # ------------------------------------------------------
-    buffer = BytesIO()
-    fig.savefig(
-        buffer,
-        format="png",
-        dpi=150,
-        bbox_inches="tight"
-    )
-    buffer.seek(0)
-
-    graph_base64 = base64.b64encode(
-        buffer.read()
-    ).decode("utf-8")
-
-    buffer.close()
-
-    if show_plot:
-        plt.show()
-
-    plt.close(fig)
-
-    # ------------------------------------------------------
-    # HTML block for email body
-    # ------------------------------------------------------
-    graph_html = f"""
-    <h3>{title}</h3>
-    <img
-        src="data:image/png;base64,{graph_base64}"
-        width="900"
-        style="max-width:100%; height:auto;"
-    >
-    """
-
-    return {
-        "save_path": save_path,
-        "base64": graph_base64,
-        "html": graph_html
-    }
-
-# ----------------------------------------------------------
-# 5. Create and save Application graph
-# ----------------------------------------------------------
-application_graph_info = plot_metric_comparison(
-    df=mbna_report,
-    actual_col="mtd_actual_application_count",
-    expected_col="mtd_expected_application_count",
-    title="MBNA Application Volume: MTD Actual vs Expected",
-    y_label="Application Count",
-    save_filename="mbna_application_count.png",
-    show_plot=True
-)
-
-# ----------------------------------------------------------
-# 6. Create and save Alert graph
-# ----------------------------------------------------------
-alert_graph_info = plot_metric_comparison(
-    df=mbna_report,
-    actual_col="mtd_actual_alerts_count",
-    expected_col="mtd_expected_alerts_count",
-    title="MBNA Alert Volume: MTD Actual vs Expected",
-    y_label="Alert Count",
-    save_filename="mbna_alert_count.png",
-    show_plot=True
-)
-
-# ----------------------------------------------------------
-# 7. Create and save Fraud graph
-# ----------------------------------------------------------
-fraud_graph_info = plot_metric_comparison(
-    df=mbna_report,
-    actual_col="mtd_actual_frauds_count",
-    expected_col="mtd_expected_frauds_count",
-    title="MBNA Fraud Volume: MTD Actual vs Expected",
-    y_label="Fraud Count",
-    save_filename="mbna_fraud_count.png",
-    show_plot=True
-)
-
-# ----------------------------------------------------------
-# 8. File paths of saved images
-# ----------------------------------------------------------
-application_graph_path = application_graph_info["save_path"]
-alert_graph_path = alert_graph_info["save_path"]
-fraud_graph_path = fraud_graph_info["save_path"]
-
-print("Saved graph files:")
-print(application_graph_path)
-print(alert_graph_path)
-print(fraud_graph_path)
-
-# ----------------------------------------------------------
-# 9. Base64 strings (if needed later)
-# ----------------------------------------------------------
-mbna_application_graph = application_graph_info["base64"]
-mbna_alert_graph = alert_graph_info["base64"]
-mbna_fraud_graph = fraud_graph_info["base64"]
-
-# ----------------------------------------------------------
-# 10. Individual HTML blocks (if needed later)
-# ----------------------------------------------------------
-mbna_application_html = application_graph_info["html"]
-mbna_alert_html = alert_graph_info["html"]
-mbna_fraud_html = fraud_graph_info["html"]
-
-# ----------------------------------------------------------
-# 11. Combined HTML block for email body
-# ----------------------------------------------------------
-mbna_graphs_html = f"""
-{mbna_application_html}
-<br><br>
-{mbna_alert_html}
-<br><br>
-{mbna_fraud_html}
+    CASE province_group
+        WHEN 'ON' THEN 1
+        WHEN 'QC' THEN 2
+        WHEN 'AB' THEN 3
+        WHEN 'BC' THEN 4
+        ELSE 5
+    END
 """
 
+mbna_8day_report = spark.sql(mbna_8day_report)
+mbna_8day_report = mbna_8day_report.toPandas()
+
+display(mbna_8day_report)
+
+
 # ----------------------------------------------------------
-# 12. Remove temp columns
+# 1. Prepare the dataframe for plotting
 # ----------------------------------------------------------
-mbna_report.drop(
-    columns=["channel_sort", "province_sort"],
-    inplace=True
+
+mbna_8day_plot = mbna_8day_report.copy()
+
+mbna_8day_plot["channel"] = (
+    mbna_8day_plot["channel"]
+    .astype(str)
+    .str.strip()
+    .str.upper()
 )
+
+mbna_8day_plot["province_group"] = (
+    mbna_8day_plot["province_group"]
+    .astype(str)
+    .str.strip()
+    .str.upper()
+)
+
+# ----------------------------------------------------------
+# 2. Application Count Graph
+# ----------------------------------------------------------
+
+application_8day_graph_info = plot_metric_comparison(
+    df=mbna_8day_plot,
+    actual_col="actual_application_count",
+    expected_col="expected_application_count",
+    title="MBNA and Amazon Application Count: Last 8 Days",
+    y_label="Application Count",
+    save_filename="mbna_8day_application_count.png",
+    actual_label="8-Day Actual",
+    expected_label="8-Day Expected",
+    show_plot=True
+)
+
+# ----------------------------------------------------------
+# 3. Alert Count Graph
+# ----------------------------------------------------------
+
+alert_8day_graph_info = plot_metric_comparison(
+    df=mbna_8day_plot,
+    actual_col="actual_alerts_count",
+    expected_col="expected_alerts_count",
+    title="MBNA and Amazon Alert Count: Last 8 Days",
+    y_label="Alert Count",
+    save_filename="mbna_8day_alert_count.png",
+    actual_label="8-Day Actual",
+    expected_label="8-Day Expected",
+    show_plot=True
+)
+
+# ----------------------------------------------------------
+# 4. Fraud Count Graph
+# ----------------------------------------------------------
+
+fraud_8day_graph_info = plot_metric_comparison(
+    df=mbna_8day_plot,
+    actual_col="actual_frauds_count",
+    expected_col="expected_frauds_count",
+    title="MBNA and Amazon Fraud Count: Last 8 Days",
+    y_label="Fraud Count",
+    save_filename="mbna_8day_fraud_count.png",
+    actual_label="8-Day Actual",
+    expected_label="8-Day Expected",
+    show_plot=True
+)
+
+
+# ----------------------------------------------------------
+# Saved PNG file paths
+# ----------------------------------------------------------
+
+application_8day_graph_path = application_8day_graph_info["save_path"]
+alert_8day_graph_path = alert_8day_graph_info["save_path"]
+fraud_8day_graph_path = fraud_8day_graph_info["save_path"]
+
+# ----------------------------------------------------------
+# Base64 encoded graphs
+# ----------------------------------------------------------
+
+mbna_8day_application_graph = application_8day_graph_info["base64"]
+mbna_8day_alert_graph = alert_8day_graph_info["base64"]
+mbna_8day_fraud_graph = fraud_8day_graph_info["base64"]
+
+# ----------------------------------------------------------
+# Individual HTML blocks
+# ----------------------------------------------------------
+
+mbna_8day_application_html = application_8day_graph_info["html"]
+mbna_8day_alert_html = alert_8day_graph_info["html"]
+mbna_8day_fraud_html = fraud_8day_graph_info["html"]
+
+# ----------------------------------------------------------
+# Combined HTML block
+# ----------------------------------------------------------
+
+mbna_8day_graphs_html = f"""
+{mbna_8day_application_html}
+<br><br>
+{mbna_8day_alert_html}
+<br><br>
+{mbna_8day_fraud_html}
+"""
+
+
+mbna_8day_table_html = (
+    mbna_8day_report
+    .drop(columns=[
+        "report_date",
+        "report_start",
+        "benchmark_start",
+        "benchmark_end"
+    ])
+    .to_html(index=False)
+)
+
+
+report_start = mbna_8day_report["report_start"].iloc[0]
+report_end = mbna_8day_report["report_date"].iloc[0]
+
+benchmark_start = mbna_8day_report["benchmark_start"].iloc[0]
+benchmark_end = mbna_8day_report["benchmark_end"].iloc[0]
+
+mbna_8day_html = f"""
+<h2>MBNA and Amazon: Rolling 8-Day Report</h2>
+
+<p>
+<b>Reporting Period:</b> {report_start} to {report_end}
+<br>
+<b>Benchmark Period:</b> {benchmark_start} to {benchmark_end}
+</p>
+
+{mbna_8day_table_html}
+
+<br><br>
+
+{mbna_8day_graphs_html}
+"""
+
+
