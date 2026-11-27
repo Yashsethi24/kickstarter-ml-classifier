@@ -1,96 +1,67 @@
-E611294424
-E611294359
-E611294347
-E611294196
-E611293817
-E611293693
-E611293599
-
-E611294772
-E611294245
-E611294239
-E611294616
-E611294149
-E611294669
-E611294873
-E611294417
-E611294301
-E611294296
-E611294419
-E611294791
-E611294096
-E611294233
-E611294393
-E611294247
-E611294696
-E611294755
-E611294365
-E611292215
-E611293052
-E611293026
-E611291642
-E611293174
-E611292144
-E611291797
-E611292946
-E611291586
-E611293348
-E611293754
-E611293533
-E611293464
-E611291890
-E611292113
-E611293332
-E611292127
-E611292607
-E611292892
-E611293700
-E611293000
-E611293987
-E611293743
-E611293378
-E611293953
-E611293288
-E611293571
-E611292727
-E611293319
-E611292337
-E611293803
-E611292576
-E611293915
-E611291651
-E611291823
-E611292694
-E611293360
-E611293147
-E611293830
-E611292304
-E611292271
-E611293594
-E611291918
-E611293785
-E611292938
-E611292088
-E611293141
-E611293541
-E611293745
-
-
-E611294405
-E611294740
-E611294723
-E611294454
-E611294719
-E611294383
-E611294632
-E611292597
-E611293413
-E611291769
-E611293239
-E611291778
-E611293970
-E611291537
-E611293460
-E611293939
-E611291765
-E611293337
+new_score_dict = {
+    "Customers.IsNameUpperCase": 10,
+    "Customers.IsReturningCustomerPlatform": 5,
+    "Device.IsPC": 1,
+    "FraudForce.IsRiskLow": 1,
+    "Email.IsCustomerEmailPopularityHigh": -30,
+    "Email.IsCustomerEmailVelocityHigh": -30,
+    "Email.IsCustomerEmailAgeHigh": -45,
+    "Email.IsCustomerEmailPopularityMedium": -8,
+    "Email.IsCustomerEmailVelocityMedium": -8,
+    "Email.IsCustomerEmailAgeMedium": 500,
+    "FraudForce.IsRiskMedium": 1,
+    "Session.IsJSEnabled": 5,
+    "FraudForce.IsRiskHigh": 500,
+    "Device.IsPhone": 17,
+    "Velocity.IsAddressLine1VelocityHigh": 15,
+    "Velocity.IsDeviceIdVelocityHigh": 1,
+    "Velocity.IsConsumerIdAddressLine1VelocityHigh": 500,
+    "Velocity.IsConsumerIdEmailVelocityHigh": 500,
+    "Velocity.IsConsumerIdPostCodeVelocityHigh": 500,
+    "Velocity.IsConsumerIdIPVelocityHigh": 10,
+    "Velocity.IsConsumerIdDeviceIdVelocityHigh": 500,
+    "Email.DoesCustomerEmailContainDomainIssue": 500,
+    "Email.IsCustomerEmailAgeLow": 500,
+    "Email.IsCustomerEmailPopularityLow": 46,
+    "Email.IsCustomerEmailVelocityLow": 46,
+    "Email.DoesCustomerEmailContainMailboxIssue": 500,
+    "Velocity.IsConsumerIdPhoneNumberVelocityHigh": 500,
+    "Velocity.IsIPVelocityHigh": 500,
+    "Velocity.IsPhoneNumberVelocityHigh": 20,
+    "Velocity.IsPostCodeVelocityHigh": 20,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour1": 20,
+    "Velocity.IsEmailVelocityHigh": 19,
+    "Velocity.IsSsnVelocityHigh": 10,
+    "Email.DoesCustomerEmailContainSyntaxIssue": 500,
+    "Velocity.IsConsumerIdSsnVelocityHigh": 10,
+    "Email.IsCustomerEmailDomainNotAllowed": 215,
+    "History.IsCustomerGoodTransHistoryBetween91and100Percent": -25,
+    "History.IsCustomerBadTransHistoryBetween91and100Percent": 500,
+    "IP.IsProxyElite": 190,
+    "IP.IsProxy": 1,
+    "IP.IsProxyPrivate": 1,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour2": 150,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour3": 500,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour4": 500,
+    "Velocity.IsTransactionVelocityPerCustomerWithin24HoursLessThan5": 500,
+    "Velocity.IsTransactionVelocityPerCustomerWithin24HoursLessThan10": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin7DaysLessThan30": 240,
+    "IP.DoesMerchantCountryMatchIPCountry": 280,
+    "IP.IsIPHostingFacility": 155,
+    "IP.IsProxyService": 500,
+    "Lists.IsBlacklisted": 500,
+    "Email.IsCustomerEmailDisposable": 215,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour5": 500,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour6": 500,
+    "Velocity.IsTransactionVelocityPerCustomerWithin7DaysGreaterThan60": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin30DaysGreaterThan60": 240,
+    "Lists.IsGreylisted": 500,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour10": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin24HoursLessThan15": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin24HoursLessThan20": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin24HoursGreaterThan20": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour7": 500,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour8": 240,
+    "Velocity.IsTransactionVelocityPerCustomerWithin1Hour9": 240,
+    "History.IsCustomerSuspiciousTransHistoryBetween91and100Percent": 300
+}
