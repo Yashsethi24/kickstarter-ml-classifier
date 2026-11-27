@@ -1,7 +1,1 @@
-blocked_cards_path = r'/Workspace/Users/rajshreyas.penukonda@td.com/Applications Fraud/Data/Cards_Sent_For_Blocking.csv'
-
-blocked_cards = pd.read_csv(blocked_cards_path, dtype=str)
-
-DF_HIST = DF_HIST[~DF_HIST['ACCT_NUM_TA1'].astype(str).isin(blocked_cards['Card'])]
-
-DF_HIST['ACCT_NUM_TA1'].dropna().astype(str).loc[lambda x: ~x.isin(['None', 'nan', '']) & ~x.isin(blocked_cards['Card'])].drop_duplicates().to_csv(blocked_cards_path, mode='a', index=False, header=False)
+fact_df.pivot_table(index='Month', columns='Score_group', aggfunc='size', fill_value=0, margins=True, margins_name='Total')
