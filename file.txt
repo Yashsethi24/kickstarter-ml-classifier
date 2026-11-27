@@ -1,3 +1,7 @@
+import os
+import base64
+from io import BytesIO
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -50,8 +54,6 @@ province_sort_order = {
 mbna_report["channel_sort"] = mbna_report["channel"].map(channel_sort_order)
 mbna_report["province_sort"] = mbna_report["province_group"].map(province_sort_order)
 
-# Sort MBNA first and AMAZON second
-# Province order: ON, QC, AB, BC, Others
 mbna_report.sort_values(
     ["channel_sort", "province_sort"],
     inplace=True
@@ -60,7 +62,14 @@ mbna_report.sort_values(
 mbna_report.reset_index(drop=True, inplace=True)
 
 # ----------------------------------------------------------
-# 3. Reusable plotting function
+# 3. Folder where graphs will be saved
+#    Change this path if you want another location
+# ----------------------------------------------------------
+output_dir = "mbna_graphs"
+os.makedirs(output_dir, exist_ok=True)
+
+# ----------------------------------------------------------
+# 4. Reusable plotting function
 # ----------------------------------------------------------
 def plot_metric_comparison(
     df,
@@ -68,8 +77,10 @@ def plot_metric_comparison(
     expected_col,
     title,
     y_label,
+    save_filename,
     actual_label="MTD Actual",
-    expected_label="MTD Expected"
+    expected_label="MTD Expected",
+    show_plot=True
 ):
     province_labels = (
         df["province_group"]
@@ -171,7 +182,8 @@ def plot_metric_comparison(
         expected_values.max() if len(expected_values) > 0 else 0
     )
 
-    ax.set_ylim(0, max_value * 1.22 if max_value > 0 else 1)
+    upper_limit = max_value * 1.22 if max_value > 0 else 1
+    ax.set_ylim(0, upper_limit)
 
     mbna_center = (mbna_count - 1) / 2 if mbna_count > 0 else 0
     amazon_count = len(df) - mbna_count
@@ -214,7 +226,7 @@ def plot_metric_comparison(
     ax.spines["left"].set_alpha(0.4)
     ax.spines["bottom"].set_alpha(0.4)
 
-    # Add smaller bar labels
+    # Add bar labels
     actual_labels = ax.bar_label(
         actual_bars,
         labels=[f"{value:,.0f}" for value in actual_values],
@@ -240,45 +252,138 @@ def plot_metric_comparison(
         x_position, y_position = label.get_position()
         label.set_position((x_position + 2, y_position))
 
-    plt.tight_layout()
-    plt.show()
+    fig.tight_layout()
 
+    # ------------------------------------------------------
+    # Save graph as PNG file
+    # ------------------------------------------------------
+    save_path = os.path.join(output_dir, save_filename)
+    fig.savefig(
+        save_path,
+        format="png",
+        dpi=150,
+        bbox_inches="tight"
+    )
+
+    # ------------------------------------------------------
+    # Save graph into memory and encode as base64
+    # ------------------------------------------------------
+    buffer = BytesIO()
+    fig.savefig(
+        buffer,
+        format="png",
+        dpi=150,
+        bbox_inches="tight"
+    )
+    buffer.seek(0)
+
+    graph_base64 = base64.b64encode(
+        buffer.read()
+    ).decode("utf-8")
+
+    buffer.close()
+
+    if show_plot:
+        plt.show()
+
+    plt.close(fig)
+
+    # ------------------------------------------------------
+    # HTML block for email body
+    # ------------------------------------------------------
+    graph_html = f"""
+    <h3>{title}</h3>
+    <img
+        src="data:image/png;base64,{graph_base64}"
+        width="900"
+        style="max-width:100%; height:auto;"
+    >
+    """
+
+    return {
+        "save_path": save_path,
+        "base64": graph_base64,
+        "html": graph_html
+    }
 
 # ----------------------------------------------------------
-# 4. Application Count Graph
+# 5. Create and save Application graph
 # ----------------------------------------------------------
-plot_metric_comparison(
+application_graph_info = plot_metric_comparison(
     df=mbna_report,
     actual_col="mtd_actual_application_count",
     expected_col="mtd_expected_application_count",
-    title="MBNA and Amazon Application Count: Actual vs Expected",
-    y_label="Application Count"
+    title="MBNA Application Volume: MTD Actual vs Expected",
+    y_label="Application Count",
+    save_filename="mbna_application_count.png",
+    show_plot=True
 )
 
 # ----------------------------------------------------------
-# 5. Alert Count Graph
+# 6. Create and save Alert graph
 # ----------------------------------------------------------
-plot_metric_comparison(
+alert_graph_info = plot_metric_comparison(
     df=mbna_report,
     actual_col="mtd_actual_alerts_count",
     expected_col="mtd_expected_alerts_count",
-    title="MBNA and Amazon Alert Count: Actual vs Expected",
-    y_label="Alert Count"
+    title="MBNA Alert Volume: MTD Actual vs Expected",
+    y_label="Alert Count",
+    save_filename="mbna_alert_count.png",
+    show_plot=True
 )
 
 # ----------------------------------------------------------
-# 6. Fraud Count Graph
+# 7. Create and save Fraud graph
 # ----------------------------------------------------------
-plot_metric_comparison(
+fraud_graph_info = plot_metric_comparison(
     df=mbna_report,
     actual_col="mtd_actual_frauds_count",
     expected_col="mtd_expected_frauds_count",
-    title="MBNA and Amazon Fraud Count: Actual vs Expected",
-    y_label="Fraud Count"
+    title="MBNA Fraud Volume: MTD Actual vs Expected",
+    y_label="Fraud Count",
+    save_filename="mbna_fraud_count.png",
+    show_plot=True
 )
 
 # ----------------------------------------------------------
-# 7. Remove temp columns
+# 8. File paths of saved images
+# ----------------------------------------------------------
+application_graph_path = application_graph_info["save_path"]
+alert_graph_path = alert_graph_info["save_path"]
+fraud_graph_path = fraud_graph_info["save_path"]
+
+print("Saved graph files:")
+print(application_graph_path)
+print(alert_graph_path)
+print(fraud_graph_path)
+
+# ----------------------------------------------------------
+# 9. Base64 strings (if needed later)
+# ----------------------------------------------------------
+mbna_application_graph = application_graph_info["base64"]
+mbna_alert_graph = alert_graph_info["base64"]
+mbna_fraud_graph = fraud_graph_info["base64"]
+
+# ----------------------------------------------------------
+# 10. Individual HTML blocks (if needed later)
+# ----------------------------------------------------------
+mbna_application_html = application_graph_info["html"]
+mbna_alert_html = alert_graph_info["html"]
+mbna_fraud_html = fraud_graph_info["html"]
+
+# ----------------------------------------------------------
+# 11. Combined HTML block for email body
+# ----------------------------------------------------------
+mbna_graphs_html = f"""
+{mbna_application_html}
+<br><br>
+{mbna_alert_html}
+<br><br>
+{mbna_fraud_html}
+"""
+
+# ----------------------------------------------------------
+# 12. Remove temp columns
 # ----------------------------------------------------------
 mbna_report.drop(
     columns=["channel_sort", "province_sort"],
