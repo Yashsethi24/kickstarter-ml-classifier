@@ -1,1 +1,1 @@
-fact_df.pivot_table(index='Month', columns='Score_group', aggfunc='size', fill_value=0, margins=True, margins_name='Total')
+pd.crosstab(fact_df['TU_Month'], fact_df['Score_group'], margins=True, margins_name='Total')
