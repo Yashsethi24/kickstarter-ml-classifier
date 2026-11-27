@@ -1,67 +1,431 @@
-score_dict = {
-    'Customers.IsNameUpperCase': 10,
-    'Customers.IsReturningCustomerPlatform': 5,
-    'Device.IsPC': 1,
-    'FraudForce.IsRiskLow': 1,
-    'Email.IsCustomerEmailPopularityHigh': -30,
-    'Email.IsCustomerEmailVelocityHigh': -30,
-    'Email.IsCustomerEmailAgeHigh': -45,
-    'Email.IsCustomerEmailPopularityMedium': -8,
-    'Email.IsCustomerEmailVelocityMedium': -8,
-    'Email.IsCustomerEmailAgeMedium': -6,
-    'FraudForce.IsRiskMedium': 1,
-    'Session.IsJSEnabled': 5,
-    'FraudForce.IsRiskHigh': 1,
-    'Device.IsPhone': 17,
-    'Velocity.IsAddressLine1VelocityHigh': 15,
-    'Velocity.IsDeviceIdVelocityHigh': 1,
-    'Velocity.IsConsumerIdAddressLine1VelocityHigh': 15,
-    'Velocity.IsConsumerIdEmailVelocityHigh': 15,
-    'Velocity.IsConsumerIdPostCodeVelocityHigh': 13,
-    'Velocity.IsConsumerIdIPVelocityHigh': 10,
-    'Velocity.IsConsumerIdDeviceIdVelocityHigh': 12,
-    'Email.DoesCustomerEmailContainDomainIssue': 500,
-    'Email.IsCustomerEmailAgeLow': 500,
-    'Email.IsCustomerEmailPopularityLow': 46,
-    'Email.IsCustomerEmailVelocityLow': 46,
-    'Email.DoesCustomerEmailContainMailboxIssue': 500,
-    'Velocity.IsConsumerIdPhoneNumberVelocityHigh': 20,
-    'Velocity.IsIPVelocityHigh': 30,
-    'Velocity.IsPhoneNumberVelocityHigh': 20,
-    'Velocity.IsPostCodeVelocityHigh': 20,
-    'Velocity.IsTransactionVelocityPerCustomerWithin1Hour1': 20,
-    'Velocity.IsEmailVelocityHigh': 19,
-    'Velocity.IsSsnVelocityHigh': 10,
-    'Email.DoesCustomerEmailContainSyntaxIssue': 60,
-    'Velocity.IsConsumerIdSsnVelocityHigh': 10,
-    'Email.IsCustomerEmailDomainNotAllowed': 215,
-    'History.IsCustomerGoodTransHistoryBetween91and100Percent': -25,
-    'History.IsCustomerBadTransHistoryBetween91and100Percent': 500,
-    'IP.IsProxyElite': 190,
-    'IP.IsProxy': 1,
-    'IP.IsProxyPrivate': 1,
-    'Velocity.IsTransactionVelocityPerCustomerWithin1Hour2': 150,
-    'Velocity.IsTransactionVelocityPerCustomerWithin1Hour3': 190,
-    'Velocity.IsTransactionVelocityPerCustomerWithin1Hour4': 240,
-    'Velocity.IsTransactionVelocityPerCustomerWithin24HoursLessThan5': 240,
-    'Velocity.IsTransactionVelocityPerCustomerWithin24HoursLessThan10': 240,
-    'Velocity.IsTransactionVelocityPerCustomerWithin7DaysLessThan30': 240,
-    'IP.DoesMerchantCountryMatchIPCountry': 280,
-    'IP.IsIPHostingFacility': 155,
-    'IP.IsProxyService': 190,
-    'Lists.IsBlacklisted': 500,
-    'Email.IsCustomerEmailDisposable': 215,
-    'Velocity.IsTransactionVelocityPerCustomerWithin1Hour5': 500,
-    'Velocity.IsTransactionVelocityPerCustomerWithin1Hour6': 500,
-    'Velocity.IsTransactionVelocityPerCustomerWithin7DaysGreaterThan60': 240,
-    'Velocity.IsTransactionVelocityPerCustomerWithin30DaysGreaterThan60': 240,
-    'Lists.IsGreylisted': 190,
-    'Velocity.IsTransactionVelocityPerCustomerWithin1Hour10': 240,
-    'Velocity.IsTransactionVelocityPerCustomerWithin24HoursLessThan15': 240,
-    'Velocity.IsTransactionVelocityPerCustomerWithin24HoursLessThan20': 240,
-    'Velocity.IsTransactionVelocityPerCustomerWithin24HoursGreaterThan20': 240,
-    'Velocity.IsTransactionVelocityPerCustomerWithin1Hour7': 500,
-    'Velocity.IsTransactionVelocityPerCustomerWithin1Hour8': 240,
-    'Velocity.IsTransactionVelocityPerCustomerWithin1Hour9': 240,
-    'History.IsCustomerSuspiciousTransHistoryBetween91and100Percent': 300
-}
+mbna_report = f"""
+WITH parameters AS (
+    SELECT
+        DATE_SUB(CURRENT_DATE(), 1) AS report_date,
+
+        TRUNC(DATE_SUB(CURRENT_DATE(), 1), 'MM')
+            AS current_month_start,
+
+        ADD_MONTHS(
+            TRUNC(DATE_SUB(CURRENT_DATE(), 1), 'MM'), -6
+        ) AS benchmark_start,
+
+        TRUNC(DATE_SUB(CURRENT_DATE(), 1), 'MM')
+            AS benchmark_end,
+
+        DAY(DATE_SUB(CURRENT_DATE(), 1)) AS report_day,
+
+        DATEDIFF(
+            TRUNC(DATE_SUB(CURRENT_DATE(), 1), 'MM'),
+            ADD_MONTHS(
+                TRUNC(DATE_SUB(CURRENT_DATE(), 1), 'MM'), -6
+            )
+        ) AS benchmark_days
+),
+
+base_data AS (
+    SELECT
+        TO_DATE(Application_Date) AS application_date,
+
+        CASE
+            WHEN UPPER(TRIM(Address_Province))
+                IN ('ON', 'ONTARIO') THEN 'ON'
+
+            WHEN UPPER(TRIM(Address_Province))
+                IN ('QC', 'PQ', 'QUEBEC', 'QUÉBEC') THEN 'QC'
+
+            WHEN UPPER(TRIM(Address_Province))
+                IN ('AB', 'ALBERTA') THEN 'AB'
+
+            WHEN UPPER(TRIM(Address_Province))
+                IN ('BC', 'BRITISH COLUMBIA') THEN 'BC'
+
+            ELSE 'Others'
+        END AS province_group,
+
+        CASE
+            WHEN Transit_Number = 'AMAZXX' THEN 'AMAZON'
+            ELSE 'MBNA'
+        END AS channel,
+
+        CAST(Application_Number AS STRING)
+            AS application_number,
+
+        COALESCE(
+            TRY_CAST(
+                REGEXP_REPLACE(
+                    CAST(Credit_Limit AS STRING), ',', ''
+                ) AS DECIMAL(18, 2)
+            ), 0
+        ) AS credit_limit
+
+    FROM hive_metastore.fiqm.applications
+
+    WHERE Product_Type = 'PUCC'
+        AND DATA_SOURCE = 'MBNA'
+        AND Application_Number IS NOT NULL
+        AND Application_Number RLIKE '^[A-E]'
+        AND TO_DATE(Application_Date) IS NOT NULL
+),
+
+-- Aggregate claims data to avoid duplication during joins
+
+claims_data AS (
+    SELECT
+        Application_Number,
+
+        MAX(
+            CASE WHEN priority_alert_ind = 1
+                THEN 1 ELSE 0
+            END
+        ) AS priority_alert_ind,
+
+        MAX(
+            CASE WHEN CONF_APP_FRAUD = 1 OR claim_ind = 1
+                THEN 1 ELSE 0
+            END
+        ) AS fraud_ind
+
+    FROM claims_final_ss11
+    GROUP BY Application_Number
+),
+
+om5_data AS (
+    SELECT DISTINCT Application_Number
+    FROM om5_alerts
+),
+
+-- Add alert and fraud indicators
+
+base_w_alerts AS (
+    SELECT
+        a.*,
+
+        COALESCE(b.priority_alert_ind, 0)
+            AS priority_alert_ind,
+
+        CASE
+            WHEN c.Application_Number IS NOT NULL
+                THEN 1
+            ELSE 0
+        END AS OM5_Alert,
+
+        COALESCE(b.fraud_ind, 0) AS fraud_ind
+
+    FROM base_data a
+
+    LEFT JOIN claims_data b
+        ON a.Application_Number = b.Application_Number
+
+    LEFT JOIN om5_data c
+        ON a.Application_Number = c.Application_Number
+),
+
+channel_data AS (
+    SELECT
+        *,
+
+        CASE
+            WHEN OM5_Alert = 1 OR priority_alert_ind = 1
+                THEN 1
+            ELSE 0
+        END AS alert_ind
+
+    FROM base_w_alerts
+
+    WHERE channel IN ('MBNA', 'AMAZON')
+),
+
+-- Six-month historical benchmark
+
+benchmark AS (
+    SELECT
+        b.channel,
+        b.province_group,
+
+        COUNT(DISTINCT b.application_number)
+            AS six_month_application_count,
+
+        SUM(b.credit_limit)
+            AS six_month_credit_limit,
+
+        COUNT(DISTINCT CASE
+            WHEN b.alert_ind = 1
+            THEN b.application_number
+        END) AS six_month_alerts_count,
+
+        COUNT(DISTINCT CASE
+            WHEN b.fraud_ind = 1
+            THEN b.application_number
+        END) AS six_month_frauds_count
+
+    FROM channel_data b
+    CROSS JOIN parameters p
+
+    WHERE b.application_date >= p.benchmark_start
+        AND b.application_date < p.benchmark_end
+
+    GROUP BY
+        b.channel,
+        b.province_group
+),
+
+-- Month-to-date actual metrics
+
+mtd_actual AS (
+    SELECT
+        b.channel,
+        b.province_group,
+
+        COUNT(DISTINCT b.application_number)
+            AS mtd_actual_application_count,
+
+        SUM(b.credit_limit)
+            AS mtd_actual_credit_limit,
+
+        COUNT(DISTINCT CASE
+            WHEN b.alert_ind = 1
+            THEN b.application_number
+        END) AS mtd_actual_alerts_count,
+
+        COUNT(DISTINCT CASE
+            WHEN b.fraud_ind = 1
+            THEN b.application_number
+        END) AS mtd_actual_frauds_count
+
+    FROM channel_data b
+    CROSS JOIN parameters p
+
+    WHERE b.application_date >= p.current_month_start
+        AND b.application_date <= p.report_date
+
+    GROUP BY
+        b.channel,
+        b.province_group
+),
+
+channel_list AS (
+    SELECT channel
+    FROM VALUES
+        ('MBNA'),
+        ('AMAZON')
+    AS channel_list(channel)
+),
+
+province_list AS (
+    SELECT province_group
+    FROM VALUES
+        ('ON'),
+        ('QC'),
+        ('AB'),
+        ('BC'),
+        ('Others')
+    AS province_list(province_group)
+),
+
+report_groups AS (
+    SELECT
+        c.channel,
+        g.province_group
+
+    FROM channel_list c
+    CROSS JOIN province_list g
+),
+
+report_metrics AS (
+    SELECT
+        p.report_date,
+        rg.channel,
+        rg.province_group,
+
+        -- APPLICATION VOLUME METRICS
+
+        CAST(
+            COALESCE(m.mtd_actual_application_count, 0)
+        AS INT) AS mtd_actual_application_count,
+
+        CAST(ROUND(
+            COALESCE(b.six_month_application_count, 0)
+            / NULLIF(p.benchmark_days, 0)
+            * p.report_day, 0
+        ) AS INT) AS mtd_expected_application_count,
+
+        CAST(ROUND(
+            COALESCE(b.six_month_application_count, 0)
+            / NULLIF(p.benchmark_days, 0)
+            * GREATEST(
+                DAY(LAST_DAY(p.report_date)) - p.report_day, 0
+            ), 0
+        ) AS INT) AS remaining_application_count,
+
+        -- CREDIT LIMIT METRICS
+
+        CONCAT(
+            '$',
+            FORMAT_NUMBER(
+                COALESCE(m.mtd_actual_credit_limit, 0), 0
+            )
+        ) AS mtd_actual_credit_limit,
+
+        CONCAT(
+            '$',
+            FORMAT_NUMBER(
+                COALESCE(b.six_month_credit_limit, 0)
+                / NULLIF(p.benchmark_days, 0)
+                * p.report_day, 0
+            )
+        ) AS mtd_expected_credit_limit,
+
+        CONCAT(
+            '$',
+            FORMAT_NUMBER(
+                COALESCE(b.six_month_credit_limit, 0)
+                / NULLIF(p.benchmark_days, 0)
+                * GREATEST(
+                    DAY(LAST_DAY(p.report_date))
+                    - p.report_day, 0
+                ), 0
+            )
+        ) AS remaining_credit_limit,
+
+        -- ALERT VOLUME METRICS
+
+        CAST(
+            COALESCE(m.mtd_actual_alerts_count, 0)
+        AS INT) AS mtd_actual_alerts_count,
+
+        CAST(ROUND(
+            COALESCE(b.six_month_alerts_count, 0)
+            / NULLIF(p.benchmark_days, 0)
+            * p.report_day, 0
+        ) AS INT) AS mtd_expected_alerts_count,
+
+        CAST(ROUND(
+            COALESCE(b.six_month_alerts_count, 0)
+            / NULLIF(p.benchmark_days, 0)
+            * GREATEST(
+                DAY(LAST_DAY(p.report_date)) - p.report_day, 0
+            ), 0
+        ) AS INT) AS remaining_alerts_count,
+
+        -- FRAUD VOLUME METRICS
+
+        CAST(
+            COALESCE(m.mtd_actual_frauds_count, 0)
+        AS INT) AS mtd_actual_frauds_count,
+
+        CAST(ROUND(
+            COALESCE(b.six_month_frauds_count, 0)
+            / NULLIF(p.benchmark_days, 0)
+            * p.report_day, 0
+        ) AS INT) AS mtd_expected_frauds_count,
+
+        CAST(ROUND(
+            COALESCE(b.six_month_frauds_count, 0)
+            / NULLIF(p.benchmark_days, 0)
+            * GREATEST(
+                DAY(LAST_DAY(p.report_date)) - p.report_day, 0
+            ), 0
+        ) AS INT) AS remaining_frauds_count
+
+    FROM report_groups rg
+    CROSS JOIN parameters p
+
+    LEFT JOIN benchmark b
+        ON rg.channel = b.channel
+        AND rg.province_group = b.province_group
+
+    LEFT JOIN mtd_actual m
+        ON rg.channel = m.channel
+        AND rg.province_group = m.province_group
+)
+
+SELECT
+    *,
+
+    -- APPLICATION THRESHOLD
+
+    CASE
+        WHEN mtd_expected_application_count = 0
+            AND mtd_actual_application_count = 0
+            THEN '🟢Green'
+
+        WHEN mtd_expected_application_count = 0
+            AND mtd_actual_application_count > 0
+            THEN '🔴Red'
+
+        WHEN mtd_actual_application_count
+            <= mtd_expected_application_count * 1.25
+            THEN '🟢Green'
+
+        WHEN mtd_actual_application_count
+            <= mtd_expected_application_count * 1.50
+            THEN '🟠Yellow'
+
+        ELSE '🔴Red'
+    END AS Threshold,
+
+    -- ALERT THRESHOLD
+
+    CASE
+        WHEN mtd_expected_alerts_count = 0
+            AND mtd_actual_alerts_count = 0
+            THEN '🟢Green'
+
+        WHEN mtd_expected_alerts_count = 0
+            AND mtd_actual_alerts_count > 0
+            THEN '🔴Red'
+
+        WHEN mtd_actual_alerts_count
+            <= mtd_expected_alerts_count * 1.25
+            THEN '🟢Green'
+
+        WHEN mtd_actual_alerts_count
+            <= mtd_expected_alerts_count * 1.50
+            THEN '🟠Yellow'
+
+        ELSE '🔴Red'
+    END AS Alerts_Threshold,
+
+    -- FRAUD THRESHOLD
+
+    CASE
+        WHEN mtd_expected_frauds_count = 0
+            AND mtd_actual_frauds_count = 0
+            THEN '🟢Green'
+
+        WHEN mtd_expected_frauds_count = 0
+            AND mtd_actual_frauds_count > 0
+            THEN '🔴Red'
+
+        WHEN mtd_actual_frauds_count
+            <= mtd_expected_frauds_count * 1.25
+            THEN '🟢Green'
+
+        WHEN mtd_actual_frauds_count
+            <= mtd_expected_frauds_count * 1.50
+            THEN '🟠Yellow'
+
+        ELSE '🔴Red'
+    END AS Frauds_Threshold
+
+FROM report_metrics
+
+ORDER BY
+    CASE channel
+        WHEN 'MBNA' THEN 1
+        WHEN 'AMAZON' THEN 2
+        ELSE 3
+    END,
+
+    CASE province_group
+        WHEN 'ON' THEN 1
+        WHEN 'QC' THEN 2
+        WHEN 'AB' THEN 3
+        WHEN 'BC' THEN 4
+        ELSE 5
+    END
+"""
+
+mbna_report = spark.sql(mbna_report)
+mbna_report = mbna_report.toPandas()
