@@ -1,418 +1,46 @@
-mbna_8day_overall_query = """
-WITH parameters AS (
-    SELECT
-        DATE_SUB(CURRENT_DATE(), 1) AS report_date,
-        DATE_SUB(CURRENT_DATE(), 8) AS report_start,
-        DATE_SUB(CURRENT_DATE(), 98) AS benchmark_start,
-        DATE_SUB(CURRENT_DATE(), 9) AS benchmark_end
-),
-
--- ==========================================================
--- Application data
--- ==========================================================
-
-base_data AS (
-    SELECT
-        TO_DATE(Application_Date) AS application_date,
-
-        CASE
-            WHEN Transit_Number = 'AMAZXX' THEN 'AMAZON'
-            ELSE 'MBNA'
-        END AS channel,
-
-        CAST(Application_Number AS STRING)
-            AS application_number,
-
-        COALESCE(
-            TRY_CAST(
-                REGEXP_REPLACE(
-                    CAST(Credit_Limit AS STRING), ',', ''
-                ) AS DECIMAL(18, 2)
-            ), 0
-        ) AS credit_limit
-
-    FROM hive_metastore.fiqm.applications
-
-    CROSS JOIN parameters p
-
-    WHERE Product_Type = 'PUCC'
-        AND DATA_SOURCE = 'MBNA'
-        AND Application_Number IS NOT NULL
-        AND Application_Number RLIKE '^[A-E]'
-
-        AND TO_DATE(Application_Date) BETWEEN
-            p.benchmark_start AND p.report_date
-),
-
--- ==========================================================
--- Claims and fraud indicators
--- ==========================================================
-
-claims_data AS (
-    SELECT
-        CAST(Application_Number AS STRING)
-            AS application_number,
-
-        MAX(
-            CASE WHEN priority_alert_ind = 1
-                THEN 1 ELSE 0
-            END
-        ) AS priority_alert_ind,
-
-        MAX(
-            CASE WHEN CONF_APP_FRAUD = 1 OR claim_ind = 1
-                THEN 1 ELSE 0
-            END
-        ) AS fraud_ind
-
-    FROM claims_final_ss11
-
-    GROUP BY CAST(Application_Number AS STRING)
-),
-
--- ==========================================================
--- OM5 alerts
--- ==========================================================
-
-om5_data AS (
-    SELECT DISTINCT
-        CAST(Application_Number AS STRING)
-            AS application_number
-
-    FROM om5_alerts
-),
-
--- ==========================================================
--- Autoblock alerts
--- ==========================================================
-
-priority_data AS (
-    SELECT
-        CAST(Application_Number AS STRING)
-            AS application_number,
-
-        MAX(
-            CASE WHEN autoblock_alert_ind = 1
-                THEN 1 ELSE 0
-            END
-        ) AS autoblock_ind
-
-    FROM priority_table
-
-    GROUP BY CAST(Application_Number AS STRING)
-),
-
--- ==========================================================
--- Combine indicators
--- ==========================================================
-
-base_w_alerts AS (
-    SELECT
-        a.*,
-
-        CASE
-            WHEN b.priority_alert_ind = 1
-                OR c.application_number IS NOT NULL
-                THEN 1
-            ELSE 0
-        END AS alert_ind,
-
-        COALESCE(b.fraud_ind, 0)
-            AS fraud_ind,
-
-        COALESCE(d.autoblock_ind, 0)
-            AS autoblock_ind
-
-    FROM base_data a
-
-    LEFT JOIN claims_data b
-        ON a.application_number = b.application_number
-
-    LEFT JOIN om5_data c
-        ON a.application_number = c.application_number
-
-    LEFT JOIN priority_data d
-        ON a.application_number = d.application_number
-),
-
-channel_data AS (
-    SELECT
-        *,
-
-        CASE
-            WHEN alert_ind = 1 AND autoblock_ind = 1
-                THEN 1
-            ELSE 0
-        END AS autoblock_alert_ind,
-
-        CASE
-            WHEN alert_ind = 1 AND autoblock_ind = 0
-                THEN 1
-            ELSE 0
-        END AS non_autoblock_alert_ind
-
-    FROM base_w_alerts
-),
-
--- ==========================================================
--- Aggregate metrics by individual date and channel
--- ==========================================================
-
-daily_metrics AS (
-    SELECT
-        application_date,
-        channel,
-
-        COUNT(DISTINCT application_number)
-            AS application_count,
-
-        SUM(credit_limit)
-            AS credit_limit,
-
-        COUNT(DISTINCT CASE
-            WHEN alert_ind = 1
-            THEN application_number
-        END) AS alerts_count,
-
-        COUNT(DISTINCT CASE
-            WHEN fraud_ind = 1
-            THEN application_number
-        END) AS frauds_count,
-
-        COUNT(DISTINCT CASE
-            WHEN autoblock_alert_ind = 1
-            THEN application_number
-        END) AS autoblock_alerts_count,
-
-        COUNT(DISTINCT CASE
-            WHEN non_autoblock_alert_ind = 1
-            THEN application_number
-        END) AS non_autoblock_alerts_count
-
-    FROM channel_data
-
-    GROUP BY
-        application_date,
-        channel
-),
-
--- ==========================================================
--- Generate all dates, including dates with zero volumes
--- ==========================================================
-
-calendar_dates AS (
-    SELECT
-        EXPLODE(
-            SEQUENCE(
-                benchmark_start,
-                report_date,
-                INTERVAL 1 DAY
-            )
-        ) AS application_date
-
-    FROM parameters
-),
-
-channel_list AS (
-    SELECT channel
-
-    FROM VALUES
-        ('MBNA'),
-        ('AMAZON')
-
-    AS channel_list(channel)
-),
-
-date_channel_grid AS (
-    SELECT
-        d.application_date,
-        c.channel
-
-    FROM calendar_dates d
-    CROSS JOIN channel_list c
-),
-
--- ==========================================================
--- Populate missing dates with zero volumes
--- ==========================================================
-
-complete_daily_metrics AS (
-    SELECT
-        g.application_date,
-
-        DATE_FORMAT(g.application_date, 'EEEE')
-            AS weekday,
-
-        DAYOFWEEK(g.application_date)
-            AS weekday_number,
-
-        g.channel,
-
-        COALESCE(m.application_count, 0)
-            AS application_count,
-
-        COALESCE(m.credit_limit, 0)
-            AS credit_limit,
-
-        COALESCE(m.alerts_count, 0)
-            AS alerts_count,
-
-        COALESCE(m.frauds_count, 0)
-            AS frauds_count,
-
-        COALESCE(m.autoblock_alerts_count, 0)
-            AS autoblock_alerts_count,
-
-        COALESCE(m.non_autoblock_alerts_count, 0)
-            AS non_autoblock_alerts_count
-
-    FROM date_channel_grid g
-
-    LEFT JOIN daily_metrics m
-        ON g.application_date = m.application_date
-        AND g.channel = m.channel
-),
-
--- ==========================================================
--- Historical same-weekday averages
--- ==========================================================
-
-benchmark AS (
-    SELECT
-        d.channel,
-        d.weekday_number,
-
-        COUNT(*) AS benchmark_weekday_days,
-
-        AVG(d.application_count)
-            AS expected_application_count,
-
-        AVG(d.credit_limit)
-            AS expected_credit_limit,
-
-        AVG(d.alerts_count)
-            AS expected_alerts_count,
-
-        AVG(d.frauds_count)
-            AS expected_frauds_count,
-
-        AVG(d.autoblock_alerts_count)
-            AS expected_autoblock_alerts_count,
-
-        AVG(d.non_autoblock_alerts_count)
-            AS expected_non_autoblock_alerts_count
-
-    FROM complete_daily_metrics d
-    CROSS JOIN parameters p
-
-    WHERE d.application_date BETWEEN
-        p.benchmark_start AND p.benchmark_end
-
-    GROUP BY
-        d.channel,
-        d.weekday_number
-),
-
--- ==========================================================
--- Last eight days actual volumes
--- ==========================================================
-
-actual AS (
-    SELECT d.*
-
-    FROM complete_daily_metrics d
-    CROSS JOIN parameters p
-
-    WHERE d.application_date BETWEEN
-        p.report_start AND p.report_date
-),
-
--- ==========================================================
--- Compare actual with historical same-weekday average
--- ==========================================================
-
-report_metrics AS (
-    SELECT
-        a.application_date,
-        a.weekday,
-        a.channel,
-
-        a.application_count
-            AS actual_application_count,
-
-        CAST(ROUND(b.expected_application_count, 0) AS INT)
-            AS expected_application_count,
-
-        a.credit_limit
-            AS actual_credit_limit,
-
-        ROUND(b.expected_credit_limit, 0)
-            AS expected_credit_limit,
-
-        a.alerts_count
-            AS actual_alerts_count,
-
-        CAST(ROUND(b.expected_alerts_count, 0) AS INT)
-            AS expected_alerts_count,
-
-        a.frauds_count
-            AS actual_frauds_count,
-
-        CAST(ROUND(b.expected_frauds_count, 0) AS INT)
-            AS expected_frauds_count,
-
-        a.autoblock_alerts_count
-            AS actual_autoblock_alerts_count,
-
-        CAST(ROUND(b.expected_autoblock_alerts_count, 0) AS INT)
-            AS expected_autoblock_alerts_count,
-
-        a.non_autoblock_alerts_count
-            AS actual_non_autoblock_alerts_count,
-
-        CAST(ROUND(b.expected_non_autoblock_alerts_count, 0) AS INT)
-            AS expected_non_autoblock_alerts_count
-
-    FROM actual a
-
-    LEFT JOIN benchmark b
-        ON a.channel = b.channel
-        AND a.weekday_number = b.weekday_number
-)
-
-SELECT *
-
-FROM report_metrics
-
-ORDER BY
-    CASE channel
-        WHEN 'MBNA' THEN 1
-        WHEN 'AMAZON' THEN 2
-        ELSE 3
-    END,
-
-    application_date DESC
-"""
-
-mbna_8day_report_overall = (
-    spark.sql(mbna_8day_overall_query)
-    .toPandas()
-)
-
-
-
-
+import os
+import base64
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
-metrics = [
-    "application_count",
-    "credit_limit",
-    "alerts_count",
-    "frauds_count",
-    "autoblock_alerts_count",
-    "non_autoblock_alerts_count"
-]
+from io import BytesIO
+from matplotlib.ticker import FuncFormatter, MaxNLocator
+
+plt.rcParams["font.family"] = "DejaVu Sans"
+
+# ==========================================================
+# 1. CONFIGURATION
+# ==========================================================
+
+output_dir = "mbna_graphs"
+os.makedirs(output_dir, exist_ok=True)
+
+channel_sort_order = {
+    "MBNA": 1,
+    "AMAZON": 2
+}
+
+province_sort_order = {
+    "ON": 1,
+    "QC": 2,
+    "AB": 3,
+    "BC": 4,
+    "OTHERS": 5
+}
+
+monthly_metrics = {
+    "application_count": "Application Count",
+    "credit_limit": "Credit Limit",
+    "alerts_count": "Alert Count",
+    "frauds_count": "Fraud Count"
+}
+
+daily_metrics = {
+    **monthly_metrics,
+    "autoblock_alerts_count": "Autoblock Alert Count",
+    "non_autoblock_alerts_count": "Non-Autoblock Alert Count"
+}
 
 threshold_metrics = {
     "application_count": "Threshold",
@@ -420,42 +48,327 @@ threshold_metrics = {
     "frauds_count": "Frauds_Threshold"
 }
 
-for metric in metrics:
+metric_expressions = {
 
-    actual = pd.to_numeric(
-        mbna_8day_report_overall[f"actual_{metric}"]
+    "application_count":
+        "COUNT(DISTINCT application_number)",
+
+    "credit_limit":
+        "SUM(credit_limit)",
+
+    "alerts_count":
+        """COUNT(DISTINCT CASE
+            WHEN alert_ind = 1
+            THEN application_number END)""",
+
+    "frauds_count":
+        """COUNT(DISTINCT CASE
+            WHEN fraud_ind = 1
+            THEN application_number END)""",
+
+    "autoblock_alerts_count":
+        """COUNT(DISTINCT CASE
+            WHEN autoblock_alert_ind = 1
+            THEN application_number END)""",
+
+    "non_autoblock_alerts_count":
+        """COUNT(DISTINCT CASE
+            WHEN non_autoblock_alert_ind = 1
+            THEN application_number END)"""
+}
+
+
+# ==========================================================
+# 2. COMMON SQL QUERY
+# ==========================================================
+
+def get_base_query(report_type):
+
+    if report_type == "monthly":
+
+        report_start = "TRUNC(report_date, 'MM')"
+
+        benchmark_start = """
+            ADD_MONTHS(TRUNC(report_date, 'MM'), -6)
+        """
+
+    else:
+
+        report_start = "DATE_SUB(report_date, 7)"
+
+        benchmark_start = "DATE_SUB(report_date, 97)"
+
+    return f"""
+
+    WITH report_parameters AS (
+        SELECT
+            DATE_SUB(CURRENT_DATE(), 1) AS report_date
+    ),
+
+    date_parameters AS (
+        SELECT
+            report_date,
+
+            {report_start} AS report_start,
+
+            {benchmark_start} AS benchmark_start
+
+        FROM report_parameters
+    ),
+
+    parameters AS (
+        SELECT
+            *,
+
+            DATE_SUB(report_start, 1)
+                AS benchmark_end,
+
+            DATEDIFF(report_date, report_start) + 1
+                AS report_days,
+
+            DATEDIFF(report_start, benchmark_start)
+                AS benchmark_days,
+
+            DATEDIFF(LAST_DAY(report_date), report_date)
+                AS remaining_days
+
+        FROM date_parameters
+    ),
+
+    base_data AS (
+        SELECT
+
+            TO_DATE(Application_Date)
+                AS application_date,
+
+            CASE
+
+                WHEN UPPER(TRIM(Address_Province))
+                    IN ('ON', 'ONTARIO')
+                    THEN 'ON'
+
+                WHEN UPPER(TRIM(Address_Province))
+                    IN ('QC', 'PQ', 'QUEBEC', 'QUÉBEC')
+                    THEN 'QC'
+
+                WHEN UPPER(TRIM(Address_Province))
+                    IN ('AB', 'ALBERTA')
+                    THEN 'AB'
+
+                WHEN UPPER(TRIM(Address_Province))
+                    IN ('BC', 'BRITISH COLUMBIA')
+                    THEN 'BC'
+
+                ELSE 'Others'
+
+            END AS province_group,
+
+            CASE
+
+                WHEN Transit_Number = 'AMAZXX'
+                    THEN 'AMAZON'
+
+                ELSE 'MBNA'
+
+            END AS channel,
+
+            CAST(Application_Number AS STRING)
+                AS application_number,
+
+            COALESCE(
+                TRY_CAST(
+                    REGEXP_REPLACE(
+                        CAST(Credit_Limit AS STRING),
+                        ',',
+                        ''
+                    ) AS DECIMAL(18, 2)
+                ),
+                0
+            ) AS credit_limit
+
+        FROM hive_metastore.fiqm.applications
+
+        CROSS JOIN parameters p
+
+        WHERE Product_Type = 'PUCC'
+            AND DATA_SOURCE = 'MBNA'
+            AND Application_Number IS NOT NULL
+            AND Application_Number RLIKE '^[A-E]'
+
+            AND TO_DATE(Application_Date) BETWEEN
+                p.benchmark_start AND p.report_date
+    ),
+
+    claims_data AS (
+        SELECT
+
+            CAST(Application_Number AS STRING)
+                AS application_number,
+
+            MAX(
+                CASE
+                    WHEN priority_alert_ind = 1
+                        THEN 1
+                    ELSE 0
+                END
+            ) AS priority_alert_ind,
+
+            MAX(
+                CASE
+                    WHEN CONF_APP_FRAUD = 1
+                        OR claim_ind = 1
+                        THEN 1
+                    ELSE 0
+                END
+            ) AS fraud_ind
+
+        FROM claims_final_ss11
+
+        GROUP BY CAST(Application_Number AS STRING)
+    ),
+
+    om5_data AS (
+        SELECT DISTINCT
+
+            CAST(Application_Number AS STRING)
+                AS application_number
+
+        FROM om5_alerts
+    ),
+
+    priority_data AS (
+        SELECT
+
+            CAST(Application_Number AS STRING)
+                AS application_number,
+
+            MAX(
+                CASE
+                    WHEN autoblock_alert_ind = 1
+                        THEN 1
+                    ELSE 0
+                END
+            ) AS autoblock_ind
+
+        FROM priority_table
+
+        GROUP BY CAST(Application_Number AS STRING)
+    ),
+
+    base_w_alerts AS (
+        SELECT
+
+            a.*,
+
+            CASE
+                WHEN b.priority_alert_ind = 1
+                    OR c.application_number IS NOT NULL
+                    THEN 1
+                ELSE 0
+            END AS alert_ind,
+
+            COALESCE(b.fraud_ind, 0)
+                AS fraud_ind,
+
+            COALESCE(d.autoblock_ind, 0)
+                AS autoblock_ind
+
+        FROM base_data a
+
+        LEFT JOIN claims_data b
+            ON a.application_number = b.application_number
+
+        LEFT JOIN om5_data c
+            ON a.application_number = c.application_number
+
+        LEFT JOIN priority_data d
+            ON a.application_number = d.application_number
+    ),
+
+    channel_data AS (
+        SELECT
+
+            *,
+
+            CASE
+                WHEN alert_ind = 1
+                    AND autoblock_ind = 1
+                    THEN 1
+                ELSE 0
+            END AS autoblock_alert_ind,
+
+            CASE
+                WHEN alert_ind = 1
+                    AND autoblock_ind = 0
+                    THEN 1
+                ELSE 0
+            END AS non_autoblock_alert_ind
+
+        FROM base_w_alerts
+
+        WHERE channel IN ('MBNA', 'AMAZON')
+    ),
+
+    channel_list AS (
+        SELECT channel
+
+        FROM VALUES
+            ('MBNA'),
+            ('AMAZON')
+
+        AS channel_list(channel)
     )
+    """
 
-    expected = pd.to_numeric(
-        mbna_8day_report_overall[f"expected_{metric}"]
-    )
 
-    # Percentage difference
+# ==========================================================
+# 3. FUNCTION TO GENERATE THRESHOLDS
+# ==========================================================
 
-    mbna_8day_report_overall[f"perc_diff_{metric}"] = (
-        (actual - expected)
-        .div(expected.replace(0, np.nan))
-        .mul(100)
-        .round(1)
-    )
+def add_thresholds(df, report_type, prefix=""):
 
-    # Threshold indicators only for applications,
-    # total alerts and frauds
+    if report_type == "monthly":
 
-    if metric in threshold_metrics:
+        green_limit = 125
+        yellow_limit = 150
 
-        mbna_8day_report_overall[
-            threshold_metrics[metric]
-        ] = np.select(
+    else:
+
+        green_limit = 110
+        yellow_limit = 120
+
+    for metric, threshold_name in threshold_metrics.items():
+
+        actual = pd.to_numeric(
+            df[f"{prefix}actual_{metric}"]
+        )
+
+        expected = pd.to_numeric(
+            df[f"{prefix}expected_{metric}"]
+        )
+
+        if report_type == "monthly":
+
+            yellow_condition = (
+                actual * 100 <= expected * yellow_limit
+            )
+
+        else:
+
+            yellow_condition = (
+                actual * 100 < expected * yellow_limit
+            )
+
+        df[threshold_name] = np.select(
 
             [
                 (expected == 0) & (actual == 0),
 
                 (expected == 0) & (actual > 0),
 
-                actual * 100 <= expected * 110,
+                actual * 100 <= expected * green_limit,
 
-                actual * 100 < expected * 120
+                yellow_condition
             ],
 
             [
@@ -468,164 +381,745 @@ for metric in metrics:
             default="🔴Red"
         )
 
+    return df
+
+
+# ==========================================================
+# 4. MONTHLY AND 8-DAY AGGREGATED REPORTS
+# ==========================================================
+
+def generate_aggregated_report(report_type):
+
+    is_monthly = report_type == "monthly"
+
+    metrics = (
+        monthly_metrics
+        if is_monthly
+        else daily_metrics
+    )
+
+    prefix = "mtd_" if is_monthly else ""
+
+    aggregation_sql = ",\n".join(
+
+        f"{metric_expressions[metric]} AS {metric}"
+
+        for metric in metrics
+    )
+
+    metric_columns = []
+
+    for metric in metrics:
+
+        actual = f"COALESCE(a.{metric}, 0)"
+
+        expected = f"""
+            COALESCE(b.{metric}, 0)
+            / NULLIF(p.benchmark_days, 0)
+            * p.report_days
+        """
+
+        remaining = f"""
+            COALESCE(b.{metric}, 0)
+            / NULLIF(p.benchmark_days, 0)
+            * p.remaining_days
+        """
+
+        if metric == "credit_limit":
+
+            metric_columns.extend([
+
+                f"""
+                ROUND({actual}, 0)
+                    AS {prefix}actual_{metric}
+                """,
+
+                f"""
+                ROUND({expected}, 0)
+                    AS {prefix}expected_{metric}
+                """
+            ])
+
+            if is_monthly:
+
+                metric_columns.append(f"""
+                    ROUND({remaining}, 0)
+                        AS remaining_{metric}
+                """)
+
+        else:
+
+            metric_columns.extend([
+
+                f"""
+                CAST({actual} AS BIGINT)
+                    AS {prefix}actual_{metric}
+                """,
+
+                f"""
+                CAST(ROUND({expected}, 0) AS BIGINT)
+                    AS {prefix}expected_{metric}
+                """
+            ])
+
+            if is_monthly:
+
+                metric_columns.append(f"""
+                    CAST(ROUND({remaining}, 0) AS BIGINT)
+                        AS remaining_{metric}
+                """)
+
+    metric_columns_sql = ",\n".join(metric_columns)
+
+    query = get_base_query(report_type) + f"""
+
+    ,
+
+    period_data AS (
+        SELECT
+
+            b.*,
+
+            CASE
+                WHEN b.application_date >= p.report_start
+                    THEN 'ACTUAL'
+                ELSE 'BENCHMARK'
+            END AS period_name
+
+        FROM channel_data b
+
+        CROSS JOIN parameters p
+    ),
+
+    aggregated_data AS (
+        SELECT
+
+            period_name,
+
+            channel,
+
+            COALESCE(province_group, 'Total')
+                AS province_group,
+
+            {aggregation_sql}
+
+        FROM period_data
+
+        GROUP BY GROUPING SETS (
+
+            (period_name, channel, province_group),
+
+            (period_name, channel)
+
+        )
+    ),
+
+    benchmark AS (
+        SELECT *
+
+        FROM aggregated_data
+
+        WHERE period_name = 'BENCHMARK'
+    ),
+
+    actual AS (
+        SELECT *
+
+        FROM aggregated_data
+
+        WHERE period_name = 'ACTUAL'
+    ),
+
+    province_list AS (
+        SELECT province_group
+
+        FROM VALUES
+            ('ON'),
+            ('QC'),
+            ('AB'),
+            ('BC'),
+            ('Others'),
+            ('Total')
+
+        AS province_list(province_group)
+    ),
+
+    report_groups AS (
+        SELECT
+
+            c.channel,
+
+            g.province_group
+
+        FROM channel_list c
+
+        CROSS JOIN province_list g
+    ),
+
+    report_metrics AS (
+        SELECT
+
+            p.report_date,
+            p.report_start,
+            p.benchmark_start,
+            p.benchmark_end,
+
+            rg.channel,
+            rg.province_group,
+
+            {metric_columns_sql}
+
+        FROM report_groups rg
+
+        CROSS JOIN parameters p
+
+        LEFT JOIN benchmark b
+            ON rg.channel = b.channel
+            AND rg.province_group = b.province_group
+
+        LEFT JOIN actual a
+            ON rg.channel = a.channel
+            AND rg.province_group = a.province_group
+    )
+
+    SELECT *
+
+    FROM report_metrics
+
+    ORDER BY
+
+        CASE channel
+            WHEN 'MBNA' THEN 1
+            WHEN 'AMAZON' THEN 2
+            ELSE 3
+        END,
+
+        CASE province_group
+            WHEN 'ON' THEN 1
+            WHEN 'QC' THEN 2
+            WHEN 'AB' THEN 3
+            WHEN 'BC' THEN 4
+            WHEN 'Others' THEN 5
+            WHEN 'Total' THEN 6
+            ELSE 7
+        END
+
+    """
+
+    report = spark.sql(query).toPandas()
+
+    report = add_thresholds(
+        report,
+        report_type,
+        prefix
+    )
+
+    return report
+
+
+# ==========================================================
+# 5. DATE-WISE OVERALL 8-DAY REPORT
+# ==========================================================
+
+def generate_daily_overall_report():
+
+    aggregation_sql = ",\n".join(
+
+        f"{metric_expressions[metric]} AS {metric}"
+
+        for metric in daily_metrics
+    )
+
+    complete_metrics_sql = ",\n".join(
+
+        f"COALESCE(m.{metric}, 0) AS {metric}"
+
+        for metric in daily_metrics
+    )
+
+    benchmark_metrics_sql = ",\n".join(
+
+        f"AVG({metric}) AS expected_{metric}"
+
+        for metric in daily_metrics
+    )
+
+    final_metric_columns = []
+
+    for metric in daily_metrics:
+
+        if metric == "credit_limit":
+
+            final_metric_columns.extend([
+
+                f"""
+                ROUND(a.{metric}, 0)
+                    AS actual_{metric}
+                """,
+
+                f"""
+                ROUND(b.expected_{metric}, 0)
+                    AS expected_{metric}
+                """
+            ])
+
+        else:
+
+            final_metric_columns.extend([
+
+                f"""
+                CAST(a.{metric} AS BIGINT)
+                    AS actual_{metric}
+                """,
+
+                f"""
+                CAST(
+                    ROUND(b.expected_{metric}, 0)
+                    AS BIGINT
+                ) AS expected_{metric}
+                """
+            ])
+
+    final_metric_columns_sql = ",\n".join(
+        final_metric_columns
+    )
+
+    query = get_base_query("daily") + f"""
+
+    ,
+
+    daily_aggregation AS (
+        SELECT
+
+            application_date,
+
+            channel,
+
+            {aggregation_sql}
+
+        FROM channel_data
+
+        GROUP BY
+            application_date,
+            channel
+    ),
+
+    calendar_dates AS (
+        SELECT
+
+            EXPLODE(
+                SEQUENCE(
+                    benchmark_start,
+                    report_date,
+                    INTERVAL 1 DAY
+                )
+            ) AS application_date
+
+        FROM parameters
+    ),
+
+    date_channel_grid AS (
+        SELECT
+
+            d.application_date,
+
+            c.channel
+
+        FROM calendar_dates d
+
+        CROSS JOIN channel_list c
+    ),
+
+    complete_daily_metrics AS (
+        SELECT
+
+            g.application_date,
+
+            DATE_FORMAT(g.application_date, 'EEEE')
+                AS weekday,
+
+            DAYOFWEEK(g.application_date)
+                AS weekday_number,
+
+            g.channel,
+
+            {complete_metrics_sql}
+
+        FROM date_channel_grid g
+
+        LEFT JOIN daily_aggregation m
+            ON g.application_date = m.application_date
+            AND g.channel = m.channel
+    ),
+
+    benchmark AS (
+        SELECT
+
+            d.channel,
+
+            d.weekday_number,
+
+            COUNT(*) AS benchmark_weekday_days,
+
+            {benchmark_metrics_sql}
+
+        FROM complete_daily_metrics d
+
+        CROSS JOIN parameters p
+
+        WHERE d.application_date BETWEEN
+            p.benchmark_start AND p.benchmark_end
+
+        GROUP BY
+
+            d.channel,
+
+            d.weekday_number
+    ),
+
+    actual AS (
+        SELECT d.*
+
+        FROM complete_daily_metrics d
+
+        CROSS JOIN parameters p
+
+        WHERE d.application_date BETWEEN
+            p.report_start AND p.report_date
+    )
+
+    SELECT
+
+        p.report_date,
+
+        p.report_start,
+
+        p.benchmark_start,
+
+        p.benchmark_end,
+
+        a.application_date,
+
+        a.weekday,
+
+        a.channel,
+
+        b.benchmark_weekday_days,
+
+        {final_metric_columns_sql}
+
+    FROM actual a
+
+    CROSS JOIN parameters p
+
+    LEFT JOIN benchmark b
+        ON a.channel = b.channel
+        AND a.weekday_number = b.weekday_number
+
+    ORDER BY
+
+        CASE a.channel
+            WHEN 'MBNA' THEN 1
+            WHEN 'AMAZON' THEN 2
+            ELSE 3
+        END,
+
+        a.application_date DESC
+
+    """
+
+    report = spark.sql(query).toPandas()
+
+    report = add_thresholds(
+        report,
+        "daily"
+    )
+
+    return report
+
+
+# ==========================================================
+# 6. GENERATE ALL FOUR REPORTS
+# ==========================================================
+
+monthly_full = generate_aggregated_report("monthly")
+
+daily_full = generate_aggregated_report("daily")
+
+
+# Monthly province-wise report
+
+mbna_report = (
+    monthly_full[
+        monthly_full["province_group"] != "Total"
+    ]
+    .copy()
+    .reset_index(drop=True)
+)
+
+
+# Monthly overall report
+
+mbna_report_overall = (
+    monthly_full[
+        monthly_full["province_group"] == "Total"
+    ]
+    .drop(columns=["province_group"])
+    .copy()
+    .reset_index(drop=True)
+)
+
+
+# Rolling 8-day province-wise report
+
+mbna_8day_report = (
+    daily_full[
+        daily_full["province_group"] != "Total"
+    ]
+    .copy()
+    .reset_index(drop=True)
+)
+
+
+# Rolling 8-day overall DATE-WISE report
+
+mbna_8day_report_overall = (
+    generate_daily_overall_report()
+)
+
+
+# ==========================================================
+# 7. ADD PERCENTAGE DIFFERENCES
+# ==========================================================
+
+def add_percentage_difference(df, metrics, prefix=""):
+
+    for metric in metrics:
+
+        actual = pd.to_numeric(
+            df[f"{prefix}actual_{metric}"]
+        )
+
+        expected = pd.to_numeric(
+            df[f"{prefix}expected_{metric}"]
+        )
+
+        percentage = (
+            (actual - expected)
+            .div(expected.replace(0, np.nan))
+            .mul(100)
+        )
+
+        percentage = percentage.mask(
+            (actual == 0) & (expected == 0),
+            0
+        )
+
+        df[f"perc_diff_{metric}"] = percentage.round(1)
+
+    return df
+
+
+mbna_8day_report_overall = add_percentage_difference(
+    mbna_8day_report_overall,
+    daily_metrics
+)
+
+
+# ==========================================================
+# 8. VALIDATE REPORTS
+# ==========================================================
+
+for df in [
+    mbna_8day_report,
+    mbna_8day_report_overall
+]:
+
+    assert (
+
+        df["actual_alerts_count"]
+
+        ==
+
+        df["actual_autoblock_alerts_count"]
+        +
+        df["actual_non_autoblock_alerts_count"]
+
+    ).all(), "Alert count reconciliation failed"
+
+
+assert len(mbna_report) == 10
+
+assert len(mbna_report_overall) == 2
+
+assert len(mbna_8day_report) == 10
+
+assert len(mbna_8day_report_overall) == 16
+
+
+# ==========================================================
+# 9. DISPLAY REPORTS
+# ==========================================================
+
+display(mbna_report_overall)
+
+display(mbna_report)
+
 display(mbna_8day_report_overall)
 
+display(mbna_8day_report)
 
 
+# ==========================================================
+# 10. REPORTING DATES
+# ==========================================================
 
-def create_daily_metric_table(
+monthly_start = pd.to_datetime(
+    mbna_report["report_start"].iloc[0]
+)
+
+monthly_end = pd.to_datetime(
+    mbna_report["report_date"].iloc[0]
+)
+
+monthly_benchmark_start = pd.to_datetime(
+    mbna_report["benchmark_start"].iloc[0]
+)
+
+monthly_benchmark_end = pd.to_datetime(
+    mbna_report["benchmark_end"].iloc[0]
+)
+
+daily_start = pd.to_datetime(
+    mbna_8day_report["report_start"].iloc[0]
+)
+
+daily_end = pd.to_datetime(
+    mbna_8day_report["report_date"].iloc[0]
+)
+
+daily_benchmark_start = pd.to_datetime(
+    mbna_8day_report["benchmark_start"].iloc[0]
+)
+
+daily_benchmark_end = pd.to_datetime(
+    mbna_8day_report["benchmark_end"].iloc[0]
+)
+
+
+# ==========================================================
+# 11. FUNCTION TO GENERATE AND SAVE GRAPHS
+# ==========================================================
+
+def plot_metric_comparison(
+
     df,
-    metric,
-    actual_label,
-    expected_label,
-    threshold_col=None
+
+    actual_col,
+
+    expected_col,
+
+    title,
+
+    y_label,
+
+    save_filename,
+
+    actual_label="Actual",
+
+    expected_label="Expected",
+
+    graph_type="province",
+
+    channel=None,
+
+    show_plot=True
+
 ):
 
-    columns = [
-        "application_date",
-        "weekday",
-        "channel",
-        f"actual_{metric}",
-        f"expected_{metric}",
-        f"perc_diff_{metric}"
-    ]
+    plot_df = df.copy()
 
-    if threshold_col:
-        columns.append(threshold_col)
-
-    table = df[columns].copy()
-
-    rename_columns = {
-        "application_date": "APPLICATION_DATE",
-        "weekday": "WEEKDAY",
-        "channel": "Product",
-        f"actual_{metric}": actual_label,
-        f"expected_{metric}": expected_label,
-        f"perc_diff_{metric}": "Perc_Diff"
-    }
-
-    if threshold_col:
-        rename_columns[threshold_col] = "STATUS"
-
-    table.rename(
-        columns=rename_columns,
-        inplace=True
+    plot_df["channel"] = (
+        plot_df["channel"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
     )
 
-    table["Perc_Diff"] = table["Perc_Diff"].apply(
-        lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A"
-    )
+    if graph_type == "province":
 
-    if metric == "credit_limit":
+        plot_df["province_group"] = (
+            plot_df["province_group"]
+            .astype(str)
+            .str.strip()
+            .str.upper()
+        )
 
-        for col in [actual_label, expected_label]:
+        plot_df["channel_sort"] = (
+            plot_df["channel"]
+            .map(channel_sort_order)
+        )
 
-            table[col] = table[col].apply(
-                lambda x: f"${x:,.0f}"
-            )
+        plot_df["province_sort"] = (
+            plot_df["province_group"]
+            .map(province_sort_order)
+        )
 
-    return table
+        plot_df = plot_df.sort_values(
+            ["channel_sort", "province_sort"]
+        ).reset_index(drop=True)
 
+        x_labels = (
+            plot_df["province_group"]
+            .replace({"OTHERS": "Others"})
+            .tolist()
+        )
 
+        x_label = "Province"
 
-# Application volume
+    else:
 
-daily_application_report = create_daily_metric_table(
-    mbna_8day_report_overall,
-    "application_count",
-    "Apps",
-    "Avg_Apps",
-    "Threshold"
-)
+        if channel is not None:
 
-# Total alerts
+            plot_df = plot_df[
+                plot_df["channel"] == channel
+            ].copy()
 
-daily_alert_report = create_daily_metric_table(
-    mbna_8day_report_overall,
-    "alerts_count",
-    "Alerts",
-    "Avg_Alerts",
-    "Alerts_Threshold"
-)
+        plot_df = (
+            plot_df
+            .sort_values("application_date")
+            .reset_index(drop=True)
+        )
 
-# Fraud volume
+        x_labels = (
+            pd.to_datetime(plot_df["application_date"])
+            .dt.strftime("%b %d\n%a")
+            .tolist()
+        )
 
-daily_fraud_report = create_daily_metric_table(
-    mbna_8day_report_overall,
-    "frauds_count",
-    "Frauds",
-    "Avg_Frauds",
-    "Frauds_Threshold"
-)
+        x_label = "Application Date"
 
-# Autoblock alerts
-
-daily_autoblock_report = create_daily_metric_table(
-    mbna_8day_report_overall,
-    "autoblock_alerts_count",
-    "Autoblock",
-    "Avg_Autoblock"
-)
-
-# Non-autoblock alerts
-
-daily_non_autoblock_report = create_daily_metric_table(
-    mbna_8day_report_overall,
-    "non_autoblock_alerts_count",
-    "Non_Autoblock",
-    "Avg_Non_Autoblock"
-)
-
-# Credit limit
-
-daily_credit_limit_report = create_daily_metric_table(
-    mbna_8day_report_overall,
-    "credit_limit",
-    "Credit_Limit",
-    "Avg_Credit_Limit"
-)
-
-
-
-import matplotlib.pyplot as plt
-import numpy as np
-import base64
-from io import BytesIO
-from matplotlib.ticker import MaxNLocator, FuncFormatter
-
-
-def plot_daily_overall(
-    df,
-    channel,
-    metric,
-    metric_label
-):
-
-    plot_df = (
-        df[df["channel"] == channel]
-        .sort_values("application_date")
-        .copy()
-    )
-
-    date_labels = (
-        pd.to_datetime(plot_df["application_date"])
-        .dt.strftime("%b %d\n%a")
-        .tolist()
-    )
 
     actual_values = (
-        pd.to_numeric(plot_df[f"actual_{metric}"])
+        pd.to_numeric(
+            plot_df[actual_col],
+            errors="coerce"
+        )
         .fillna(0)
-        .to_numpy()
+        .to_numpy(dtype=float)
     )
 
     expected_values = (
-        pd.to_numeric(plot_df[f"expected_{metric}"])
+        pd.to_numeric(
+            plot_df[expected_col],
+            errors="coerce"
+        )
         .fillna(0)
-        .to_numpy()
+        .to_numpy(dtype=float)
     )
 
     x = np.arange(len(plot_df))
+
     bar_width = 0.30
 
     fig, ax = plt.subplots(
@@ -636,231 +1130,1549 @@ def plot_daily_overall(
     ax.set_facecolor("#FCFCFC")
 
     actual_bars = ax.bar(
+
         x - bar_width / 2,
+
         actual_values,
+
         width=bar_width,
-        label="Actual",
+
+        label=actual_label,
+
         color="#548235",
+
         edgecolor="grey",
+
         linewidth=1.2
     )
 
     expected_bars = ax.bar(
+
         x + bar_width / 2,
+
         expected_values,
+
         width=bar_width,
-        label="Historical Same-Day Average",
+
+        label=expected_label,
+
         color="#A9D18E",
+
         edgecolor="grey",
+
         linewidth=1.2
     )
 
     ax.set_title(
-        f"{channel} {metric_label}: Actual vs Expected",
+        title,
         fontsize=12
     )
 
-    ax.set_xlabel("Application Date", fontsize=10)
-    ax.set_ylabel(metric_label, fontsize=10)
+    ax.set_xlabel(
+        x_label,
+        fontsize=10,
+        labelpad=8
+    )
+
+    ax.set_ylabel(
+        y_label,
+        fontsize=10,
+        labelpad=8
+    )
 
     ax.set_xticks(x)
-    ax.set_xticklabels(date_labels, fontsize=9)
+
+    ax.set_xticklabels(
+        x_labels,
+        fontsize=9
+    )
 
     ax.yaxis.set_major_locator(
         MaxNLocator(integer=True)
     )
 
     ax.yaxis.set_major_formatter(
+
         FuncFormatter(
             lambda value, position: f"{value:,.0f}"
         )
     )
 
+    ax.tick_params(
+        axis="y",
+        labelsize=9
+    )
+
     max_value = max(
-        actual_values.max(),
-        expected_values.max(),
+
+        actual_values.max()
+            if len(actual_values) else 0,
+
+        expected_values.max()
+            if len(expected_values) else 0,
+
         1
     )
 
-    ax.set_ylim(0, max_value * 1.22)
+    ax.set_ylim(
+        0,
+        max_value * 1.22
+    )
 
-    ax.legend()
+    # Add MBNA and AMAZON headings
+    # for province-wise graphs
+
+    if graph_type == "province":
+
+        mbna_count = (
+            plot_df["channel"] == "MBNA"
+        ).sum()
+
+        amazon_count = (
+            plot_df["channel"] == "AMAZON"
+        ).sum()
+
+        separator_position = mbna_count - 0.5
+
+        if mbna_count > 0 and amazon_count > 0:
+
+            ax.axvline(
+
+                x=separator_position,
+
+                color="#7A7A7A",
+
+                linestyle="--",
+
+                linewidth=1.2
+            )
+
+        mbna_center = (
+            mbna_count - 1
+        ) / 2
+
+        amazon_center = (
+            mbna_count
+            + (amazon_count - 1) / 2
+        )
+
+        if mbna_count > 0:
+
+            ax.text(
+
+                mbna_center,
+
+                max_value * 1.14,
+
+                "MBNA",
+
+                ha="center",
+
+                fontsize=12,
+
+                fontweight="bold"
+            )
+
+        if amazon_count > 0:
+
+            ax.text(
+
+                amazon_center,
+
+                max_value * 1.14,
+
+                "AMAZON",
+
+                ha="center",
+
+                fontsize=12,
+
+                fontweight="bold"
+            )
+
+    ax.legend(
+        loc="upper right"
+    )
 
     ax.grid(
+
         axis="y",
+
         linestyle="--",
+
         linewidth=0.7,
+
         alpha=0.25
     )
 
     ax.set_axisbelow(True)
 
     ax.spines["top"].set_visible(False)
+
     ax.spines["right"].set_visible(False)
+
     ax.spines["left"].set_alpha(0.4)
+
     ax.spines["bottom"].set_alpha(0.4)
 
     actual_labels = ax.bar_label(
+
         actual_bars,
-        labels=[f"{v:,.0f}" for v in actual_values],
+
+        labels=[
+            f"{value:,.0f}"
+            for value in actual_values
+        ],
+
         padding=3,
+
         fontsize=10
     )
 
     expected_labels = ax.bar_label(
+
         expected_bars,
-        labels=[f"{v:,.0f}" for v in expected_values],
+
+        labels=[
+            f"{value:,.0f}"
+            for value in expected_values
+        ],
+
         padding=3,
+
         fontsize=10
     )
 
     for label in actual_labels:
+
         xp, yp = label.get_position()
-        label.set_position((xp - 2, yp))
+
+        label.set_position(
+            (xp - 2, yp)
+        )
 
     for label in expected_labels:
+
         xp, yp = label.get_position()
-        label.set_position((xp + 2, yp))
+
+        label.set_position(
+            (xp + 2, yp)
+        )
 
     fig.tight_layout()
 
-    # Save graph in memory for email
+    # Save graph in memory
 
     with BytesIO() as buffer:
 
         fig.savefig(
+
             buffer,
+
             format="png",
+
             dpi=150,
+
             bbox_inches="tight"
         )
 
-        graph_base64 = base64.b64encode(
-            buffer.getvalue()
-        ).decode("utf-8")
+        image_bytes = buffer.getvalue()
 
-    plt.show()
-    plt.close(fig)
+    # Save PNG file
 
-    return f"""
+    save_path = os.path.join(
+        output_dir,
+        save_filename
+    )
+
+    with open(save_path, "wb") as file:
+
+        file.write(image_bytes)
+
+    # Generate Base64 string
+
+    graph_base64 = (
+        base64.b64encode(image_bytes)
+        .decode("utf-8")
+    )
+
+    graph_html = f"""
+
     <img
+
         src="data:image/png;base64,{graph_base64}"
+
         width="900"
+
         style="max-width:100%; height:auto;"
+
+        alt="{title}"
+
     >
+
     """
 
+    if show_plot:
+
+        plt.show()
+
+    plt.close(fig)
+
+    return {
+
+        "save_path": save_path,
+
+        "base64": graph_base64,
+
+        "html": graph_html
+    }
 
 
+# ==========================================================
+# 12. GENERATE MONTHLY PROVINCE-WISE GRAPHS
+# ==========================================================
+
+monthly_graphs = {}
+
+for metric, label in monthly_metrics.items():
+
+    if metric == "credit_limit":
+        continue
+
+    monthly_graphs[metric] = plot_metric_comparison(
+
+        df=mbna_report,
+
+        actual_col=f"mtd_actual_{metric}",
+
+        expected_col=f"mtd_expected_{metric}",
+
+        title=(
+            f"MBNA and Amazon {label}: "
+            f"MTD Actual vs Expected"
+        ),
+
+        y_label=label,
+
+        save_filename=f"mbna_mtd_{metric}.png",
+
+        actual_label="MTD Actual",
+
+        expected_label="MTD Expected",
+
+        graph_type="province",
+
+        show_plot=True
+    )
+
+
+# ==========================================================
+# 13. GENERATE 8-DAY PROVINCE-WISE GRAPHS
+# ==========================================================
+
+daily_province_graphs = {}
+
+for metric, label in daily_metrics.items():
+
+    if metric == "credit_limit":
+        continue
+
+    daily_province_graphs[metric] = (
+        plot_metric_comparison(
+
+            df=mbna_8day_report,
+
+            actual_col=f"actual_{metric}",
+
+            expected_col=f"expected_{metric}",
+
+            title=(
+                f"MBNA and Amazon {label}: "
+                f"Last 8 Days"
+            ),
+
+            y_label=label,
+
+            save_filename=(
+                f"mbna_8day_province_{metric}.png"
+            ),
+
+            actual_label="8-Day Actual",
+
+            expected_label="8-Day Expected",
+
+            graph_type="province",
+
+            show_plot=True
+        )
+    )
+
+
+# ==========================================================
+# 14. GENERATE DAILY OVERALL GRAPHS BY CHANNEL
+# ==========================================================
 
 daily_overall_graphs = {}
 
-graph_metrics = {
-    "application_count": "Application Count",
-    "alerts_count": "Alert Count",
-    "frauds_count": "Fraud Count",
-    "autoblock_alerts_count": "Autoblock Alert Count",
-    "non_autoblock_alerts_count": "Non-Autoblock Alert Count"
-}
-
 for channel in ["MBNA", "AMAZON"]:
 
-    for metric, label in graph_metrics.items():
+    for metric, label in daily_metrics.items():
 
-        daily_overall_graphs[(channel, metric)] = (
-            plot_daily_overall(
-                mbna_8day_report_overall,
-                channel,
-                metric,
-                label
-            )
+        if metric == "credit_limit":
+            continue
+
+        daily_overall_graphs[
+            (channel, metric)
+        ] = plot_metric_comparison(
+
+            df=mbna_8day_report_overall,
+
+            actual_col=f"actual_{metric}",
+
+            expected_col=f"expected_{metric}",
+
+            title=(
+                f"{channel} {label}: "
+                f"Daily Actual vs Historical Same-Day Average"
+            ),
+
+            y_label=label,
+
+            save_filename=(
+                f"{channel.lower()}_daily_{metric}.png"
+            ),
+
+            actual_label="Actual",
+
+            expected_label="Historical Same-Day Average",
+
+            graph_type="daily",
+
+            channel=channel,
+
+            show_plot=True
         )
 
 
+# ==========================================================
+# 15. SAVE GRAPH VARIABLES
+# ==========================================================
 
-daily_metric_reports = {
+mbna_application_html = (
+    monthly_graphs["application_count"]["html"]
+)
 
-    "application_count": (
-        "Application Volumes",
-        daily_application_report
-    ),
+mbna_alert_html = (
+    monthly_graphs["alerts_count"]["html"]
+)
 
-    "alerts_count": (
-        "Alert Volumes",
-        daily_alert_report
-    ),
+mbna_fraud_html = (
+    monthly_graphs["frauds_count"]["html"]
+)
 
-    "frauds_count": (
-        "Fraud Volumes",
-        daily_fraud_report
-    ),
+mbna_8day_application_html = (
+    daily_province_graphs["application_count"]["html"]
+)
 
-    "autoblock_alerts_count": (
-        "Autoblock Alert Volumes",
-        daily_autoblock_report
-    ),
+mbna_8day_alert_html = (
+    daily_province_graphs["alerts_count"]["html"]
+)
 
-    "non_autoblock_alerts_count": (
-        "Non-Autoblock Alert Volumes",
-        daily_non_autoblock_report
-    ),
+mbna_8day_fraud_html = (
+    daily_province_graphs["frauds_count"]["html"]
+)
 
-    "credit_limit": (
-        "Credit Limit",
-        daily_credit_limit_report
+mbna_8day_autoblock_html = (
+    daily_province_graphs["autoblock_alerts_count"]["html"]
+)
+
+mbna_8day_non_autoblock_html = (
+    daily_province_graphs[
+        "non_autoblock_alerts_count"
+    ]["html"]
+)
+
+mbna_monthly_graphs_html = "<br><br>".join(
+
+    graph["html"]
+
+    for graph in monthly_graphs.values()
+)
+
+mbna_daily_graphs_html = "<br><br>".join(
+
+    graph["html"]
+
+    for graph in daily_province_graphs.values()
+)
+
+all_graph_paths = [
+
+    graph["save_path"]
+
+    for graph in monthly_graphs.values()
+
+] + [
+
+    graph["save_path"]
+
+    for graph in daily_province_graphs.values()
+
+] + [
+
+    graph["save_path"]
+
+    for graph in daily_overall_graphs.values()
+
+]
+
+
+# ==========================================================
+# 16. FUNCTION TO FORMAT AGGREGATED REPORT TABLES
+# ==========================================================
+
+def format_summary_table(
+
+    df,
+
+    report_type,
+
+    include_province=True
+
+):
+
+    is_monthly = report_type == "monthly"
+
+    prefix = "mtd_" if is_monthly else ""
+
+    metrics = (
+        monthly_metrics
+        if is_monthly
+        else daily_metrics
     )
-}
+
+    columns = ["channel"]
+
+    rename_columns = {
+        "channel": "Channel"
+    }
+
+    if include_province:
+
+        columns.append("province_group")
+
+        rename_columns["province_group"] = "Province"
+
+    for metric, label in metrics.items():
+
+        actual_col = f"{prefix}actual_{metric}"
+
+        expected_col = f"{prefix}expected_{metric}"
+
+        columns.extend([
+            actual_col,
+            expected_col
+        ])
+
+        rename_columns[actual_col] = (
+            f"Actual {label}"
+        )
+
+        rename_columns[expected_col] = (
+            f"Expected {label}"
+        )
+
+        if is_monthly:
+
+            remaining_col = f"remaining_{metric}"
+
+            columns.append(remaining_col)
+
+            rename_columns[remaining_col] = (
+                f"Remaining {label}"
+            )
+
+        if metric in threshold_metrics:
+
+            threshold_col = threshold_metrics[metric]
+
+            columns.append(threshold_col)
+
+            rename_columns[threshold_col] = (
+                f"{label} Status"
+            )
+
+    table = df[columns].copy()
+
+    for col in table.columns:
+
+        if "credit_limit" in col:
+
+            table[col] = table[col].apply(
+
+                lambda value: (
+                    f"${float(value):,.0f}"
+                    if pd.notna(value)
+                    else "N/A"
+                )
+            )
+
+        elif (
+
+            col.startswith("mtd_actual_")
+
+            or col.startswith("mtd_expected_")
+
+            or col.startswith("actual_")
+
+            or col.startswith("expected_")
+
+            or col.startswith("remaining_")
+
+        ):
+
+            table[col] = table[col].apply(
+
+                lambda value: (
+                    f"{float(value):,.0f}"
+                    if pd.notna(value)
+                    else "N/A"
+                )
+            )
+
+    table.rename(
+        columns=rename_columns,
+        inplace=True
+    )
+
+    return table
+
+
+# ==========================================================
+# 17. FUNCTION TO CREATE DAILY DATE-WISE TABLES
+# ==========================================================
+
+def create_daily_metric_table(
+
+    df,
+
+    channel,
+
+    metric
+
+):
+
+    metric_labels = {
+
+        "application_count": (
+            "Apps",
+            "Avg_Apps"
+        ),
+
+        "credit_limit": (
+            "Credit_Limit",
+            "Avg_Credit_Limit"
+        ),
+
+        "alerts_count": (
+            "Alerts",
+            "Avg_Alerts"
+        ),
+
+        "frauds_count": (
+            "Frauds",
+            "Avg_Frauds"
+        ),
+
+        "autoblock_alerts_count": (
+            "Autoblock",
+            "Avg_Autoblock"
+        ),
+
+        "non_autoblock_alerts_count": (
+            "Non_Autoblock",
+            "Avg_Non_Autoblock"
+        )
+    }
+
+    actual_label, expected_label = (
+        metric_labels[metric]
+    )
+
+    columns = [
+
+        "application_date",
+
+        "weekday",
+
+        "channel",
+
+        f"actual_{metric}",
+
+        f"expected_{metric}",
+
+        f"perc_diff_{metric}"
+    ]
+
+    threshold_col = threshold_metrics.get(metric)
+
+    if threshold_col:
+
+        columns.append(threshold_col)
+
+    table = (
+
+        df[df["channel"] == channel]
+
+        .sort_values(
+            "application_date",
+            ascending=False
+        )
+
+        [columns]
+
+        .copy()
+    )
+
+    rename_columns = {
+
+        "application_date": "APPLICATION_DATE",
+
+        "weekday": "WEEKDAY",
+
+        "channel": "Product",
+
+        f"actual_{metric}": actual_label,
+
+        f"expected_{metric}": expected_label,
+
+        f"perc_diff_{metric}": "Perc_Diff"
+    }
+
+    if threshold_col:
+
+        rename_columns[threshold_col] = "STATUS"
+
+    table.rename(
+
+        columns=rename_columns,
+
+        inplace=True
+    )
+
+    table["APPLICATION_DATE"] = (
+
+        pd.to_datetime(
+            table["APPLICATION_DATE"]
+        )
+
+        .dt.strftime("%Y-%m-%d")
+    )
+
+    table["Perc_Diff"] = (
+
+        table["Perc_Diff"].apply(
+
+            lambda value: (
+
+                f"{value:.1f}%"
+
+                if pd.notna(value)
+
+                else "N/A"
+            )
+        )
+    )
+
+    for col in [
+
+        actual_label,
+
+        expected_label
+    ]:
+
+        if metric == "credit_limit":
+
+            table[col] = table[col].apply(
+
+                lambda value: f"${float(value):,.0f}"
+
+                if pd.notna(value)
+
+                else "N/A"
+            )
+
+        else:
+
+            table[col] = table[col].apply(
+
+                lambda value: f"{float(value):,.0f}"
+
+                if pd.notna(value)
+
+                else "N/A"
+            )
+
+    return table.reset_index(drop=True)
+
+
+# ==========================================================
+# 18. FORMAT HTML TABLES
+# ==========================================================
+
+def dataframe_to_html(df):
+
+    return (
+
+        df.to_html(
+
+            index=False,
+
+            border=1,
+
+            escape=True
+        )
+
+        .replace(
+
+            '<table border="1" class="dataframe">',
+
+            """
+            <table style="
+                border-collapse:collapse;
+                font-family:Arial, Helvetica, sans-serif;
+                font-size:11px;
+                color:#222222;
+                border:1px solid #BFBFBF;
+            ">
+            """
+        )
+
+        .replace(
+
+            '<tr style="text-align: right;">',
+
+            '<tr style="text-align:center;">'
+        )
+
+        .replace(
+
+            "<th>",
+
+            """
+            <th style="
+                background-color:#548235;
+                color:white;
+                border:1px solid #BFBFBF;
+                padding:6px;
+                text-align:center;
+            ">
+            """
+        )
+
+        .replace(
+
+            "<td>",
+
+            """
+            <td style="
+                border:1px solid #BFBFBF;
+                padding:5px;
+                text-align:center;
+            ">
+            """
+        )
+    )
+
+
+monthly_overall_html = dataframe_to_html(
+
+    format_summary_table(
+
+        mbna_report_overall,
+
+        "monthly",
+
+        include_province=False
+    )
+)
+
+
+monthly_province_html = dataframe_to_html(
+
+    format_summary_table(
+
+        mbna_report,
+
+        "monthly",
+
+        include_province=True
+    )
+)
+
+
+daily_province_html = dataframe_to_html(
+
+    format_summary_table(
+
+        mbna_8day_report,
+
+        "daily",
+
+        include_province=True
+    )
+)
+
+
+# ==========================================================
+# 19. CREATE DAILY OVERALL TABLES AND GRAPHS
+# ==========================================================
 
 daily_overall_sections = []
+
+daily_overall_tables = {}
+
+daily_report_order = [
+
+    "application_count",
+
+    "alerts_count",
+
+    "autoblock_alerts_count",
+
+    "non_autoblock_alerts_count",
+
+    "frauds_count",
+
+    "credit_limit"
+]
 
 for channel in ["MBNA", "AMAZON"]:
 
     daily_overall_sections.append(
-        f"<h2>{channel} - Daily Overall Monitoring</h2>"
+
+        f"""
+        <h3 style="
+            color:#548235;
+            font-family:Arial;
+            font-size:14px;
+        ">
+            {channel} - Daily Overall Monitoring
+        </h3>
+        """
     )
 
-    for metric, (title, df) in daily_metric_reports.items():
+    for metric in daily_report_order:
 
-        channel_table = (
-            df[df["Product"] == channel]
-            .to_html(index=False)
+        label = daily_metrics[metric]
+
+        metric_table = create_daily_metric_table(
+
+            mbna_8day_report_overall,
+
+            channel,
+
+            metric
         )
+
+        daily_overall_tables[
+            (channel, metric)
+        ] = metric_table
 
         daily_overall_sections.extend([
 
             f"""
-            <b>{channel} {title} Compared with
-            Historical Same-Day Averages</b>
+            <b>
+                {channel} {label} Compared with
+                Historical Same-Day Averages
+            </b>
             """,
 
-            channel_table,
-
-            "<br><br>",
-
-            daily_overall_graphs.get(
-                (channel, metric), ""
-            ),
+            dataframe_to_html(metric_table),
 
             "<br><br>"
         ])
 
-daily_overall_html = "".join(daily_overall_sections)
+        if (channel, metric) in daily_overall_graphs:
+
+            daily_overall_sections.extend([
+
+                daily_overall_graphs[
+                    (channel, metric)
+                ]["html"],
+
+                "<br><br>"
+            ])
+
+daily_overall_html = "".join(
+    daily_overall_sections
+)
 
 
+# ==========================================================
+# 20. DETERMINE OVERALL EMAIL THRESHOLD
+# ==========================================================
 
-"""
-<p style="margin:4px 0;">
-    <b>Daily Overall Benchmark:</b>
-    Expected daily volumes are calculated using the
-    average volume for the corresponding weekday
-    within the 90 calendar days immediately preceding
-    the eight-day reporting period.
-</p>
+threshold_columns = [
 
-<p style="margin:4px 0;">
-    <b>8-Day Province-wise Benchmark:</b>
-    Expected volumes are calculated using the average
-    daily volume of the preceding 90 calendar days,
-    multiplied by eight.
-</p>
-"""
+    "Threshold",
+
+    "Alerts_Threshold",
+
+    "Frauds_Threshold"
+]
+
+all_thresholds = []
+
+for df in [
+
+    mbna_report,
+
+    mbna_report_overall,
+
+    mbna_8day_report,
+
+    mbna_8day_report_overall
+
+]:
+
+    all_thresholds.extend(
+
+        df[threshold_columns]
+
+        .astype(str)
+
+        .to_numpy()
+
+        .flatten()
+
+        .tolist()
+    )
+
+all_thresholds = [
+
+    value.upper()
+
+    for value in all_thresholds
+]
+
+if any(
+
+    "RED" in value
+
+    for value in all_thresholds
+
+):
+
+    email_status = "RED"
+
+elif any(
+
+    "YELLOW" in value
+
+    for value in all_thresholds
+
+):
+
+    email_status = "YELLOW"
+
+elif all_thresholds and all(
+
+    "GREEN" in value
+
+    for value in all_thresholds
+
+):
+
+    email_status = "GREEN"
+
+else:
+
+    email_status = "UNKNOWN"
+
+
+# ==========================================================
+# 21. EMAIL SUBJECT
+# ==========================================================
+
+subject = (
+
+    f"[{email_status}] "
+
+    f"Daily MBNA and Amazon Application, "
+
+    f"Alert, Fraud and Credit Limit Reporting"
+)
+
+
+# ==========================================================
+# 22. EMAIL BODY
+# ==========================================================
+
+message_list = [
+
+    """
+    <div style="
+        font-family:Arial, Helvetica, sans-serif;
+        font-size:12px;
+        line-height:1.4;
+        color:#222222;
+    ">
+
+    <p>Hi Team,</p>
+
+    <p>
+        Please find below the MBNA and Amazon application
+        monitoring report, providing an overall and
+        province-wise breakdown of application volumes,
+        credit limits, alerts and frauds.
+    </p>
+
+    <p>
+        The report includes month-to-date monitoring
+        against the previous six-month benchmark and
+        daily monitoring for the last eight completed
+        days against the preceding 90-day benchmark.
+    </p>
+
+    <b>
+        Thresholds for Application, Alert and Fraud Counts:
+    </b>
+
+    <table style="
+        border-collapse:collapse;
+        font-size:12px;
+    " border="1" cellpadding="6">
+
+        <tr style="
+            background-color:#548235;
+            color:white;
+        ">
+
+            <th>Threshold</th>
+
+            <th>Monthly</th>
+
+            <th>Rolling 8 Days</th>
+
+        </tr>
+
+        <tr>
+
+            <td>🟢 Green</td>
+
+            <td>Up to 25% above expected</td>
+
+            <td>Up to 10% above expected</td>
+
+        </tr>
+
+        <tr>
+
+            <td>🟠 Yellow</td>
+
+            <td>Above 25% and up to 50%</td>
+
+            <td>Above 10% and below 20%</td>
+
+        </tr>
+
+        <tr>
+
+            <td>🔴 Red</td>
+
+            <td>Above 50%</td>
+
+            <td>20% or higher</td>
+
+        </tr>
+
+    </table>
+
+    <p>
+        Where expected volume is zero, any positive
+        actual volume is classified as Red.
+    </p>
+
+    </div>
+    """,
+
+    "<br>",
+
+    # ======================================================
+    # MONTHLY REPORT
+    # ======================================================
+
+    f"""
+    <h2 style="
+        color:#548235;
+        font-family:Arial;
+        font-size:16px;
+        border-bottom:2px solid #548235;
+    ">
+
+        1. MBNA and Amazon - Month-to-Date Report
+
+    </h2>
+
+    <p style="font-family:Arial; font-size:12px;">
+
+        <b>Reporting Period:</b>
+
+        {monthly_start:%B %d, %Y}
+        to
+        {monthly_end:%B %d, %Y}
+
+        <br>
+
+        <b>Benchmark Period:</b>
+
+        {monthly_benchmark_start:%B %d, %Y}
+        to
+        {monthly_benchmark_end:%B %d, %Y}
+
+    </p>
+    """,
+
+    "<b>1.1 Month-to-Date Overall Summary</b>",
+
+    monthly_overall_html,
+
+    "<br><br>",
+
+    "<b>1.2 Month-to-Date Province-wise Summary</b>",
+
+    monthly_province_html,
+
+    "<br><br>",
+
+    "<b>1.3 Month-to-Date Application Count</b>",
+
+    mbna_application_html,
+
+    "<br><br>",
+
+    "<b>1.4 Month-to-Date Alert Count</b>",
+
+    mbna_alert_html,
+
+    "<br><br>",
+
+    "<b>1.5 Month-to-Date Fraud Count</b>",
+
+    mbna_fraud_html,
+
+    "<br><br>",
+
+    # ======================================================
+    # ROLLING 8-DAY REPORT
+    # ======================================================
+
+    f"""
+    <h2 style="
+        color:#548235;
+        font-family:Arial;
+        font-size:16px;
+        border-bottom:2px solid #548235;
+    ">
+
+        2. MBNA and Amazon - Rolling 8-Day Report
+
+    </h2>
+
+    <p style="font-family:Arial; font-size:12px;">
+
+        <b>Reporting Period:</b>
+
+        {daily_start:%B %d, %Y}
+        to
+        {daily_end:%B %d, %Y}
+
+        <br>
+
+        <b>Benchmark Period:</b>
+
+        {daily_benchmark_start:%B %d, %Y}
+        to
+        {daily_benchmark_end:%B %d, %Y}
+
+    </p>
+    """,
+
+    # Daily overall date-wise reports
+
+    "<b>2.1 Daily Overall Volume Monitoring</b>",
+
+    daily_overall_html,
+
+    "<br><br>",
+
+    # Daily province-wise reports
+
+    "<b>2.2 Rolling 8-Day Province-wise Summary</b>",
+
+    daily_province_html,
+
+    "<br><br>",
+
+    "<b>2.3 Rolling 8-Day Application Count</b>",
+
+    mbna_8day_application_html,
+
+    "<br><br>",
+
+    "<b>2.4 Rolling 8-Day Alert Count</b>",
+
+    mbna_8day_alert_html,
+
+    "<br><br>",
+
+    "<b>2.5 Rolling 8-Day Autoblock Alert Count</b>",
+
+    mbna_8day_autoblock_html,
+
+    "<br><br>",
+
+    "<b>2.6 Rolling 8-Day Non-Autoblock Alert Count</b>",
+
+    mbna_8day_non_autoblock_html,
+
+    "<br><br>",
+
+    "<b>2.7 Rolling 8-Day Fraud Count</b>",
+
+    mbna_8day_fraud_html,
+
+    "<br><br>",
+
+    # ======================================================
+    # REPORTING NOTES
+    # ======================================================
+
+    """
+    <div style="
+        font-family:Arial, Helvetica, sans-serif;
+        font-size:12px;
+        line-height:1.4;
+        color:#222222;
+        margin-top:18px;
+    ">
+
+    <b>Reporting Notes:</b>
+
+    <p style="margin:4px 0;">
+
+        <b>Application Count:</b>
+
+        Includes all applications where credit was
+        requested and is not limited to applications
+        where credit was approved.
+
+    </p>
+
+    <p style="margin:4px 0;">
+
+        <b>Alert Count:</b>
+
+        Includes distinct applications identified
+        through priority alerts or OM5 alerts.
+
+    </p>
+
+    <p style="margin:4px 0;">
+
+        <b>Autoblock Alerts:</b>
+
+        Includes alerted applications associated
+        with an autoblock alert.
+
+    </p>
+
+    <p style="margin:4px 0;">
+
+        <b>Non-Autoblock Alerts:</b>
+
+        Includes alerted applications without an
+        associated autoblock alert, including
+        OM5-only alerts.
+
+    </p>
+
+    <p style="margin:4px 0;">
+
+        <b>Alert Classification:</b>
+
+        Autoblock alerts are prioritized when an
+        application has multiple alert types.
+
+        No separate threshold indicators are applied
+        to autoblock or non-autoblock alert volumes.
+
+    </p>
+
+    <p style="margin:4px 0;">
+
+        <b>Fraud Count:</b>
+
+        Includes distinct applications identified
+        as confirmed application fraud or associated
+        with a fraud claim.
+
+    </p>
+
+    <p style="margin:4px 0;">
+
+        <b>Monthly Benchmark:</b>
+
+        Expected volumes are calculated using the
+        daily average of the previous six completed
+        calendar months, adjusted for the number
+        of elapsed days in the reporting month.
+
+    </p>
+
+    <p style="margin:4px 0;">
+
+        <b>Daily Overall Benchmark:</b>
+
+        Expected daily volumes are calculated using
+        the historical average for the corresponding
+        weekday within the 90 calendar days immediately
+        preceding the eight-day reporting period.
+
+    </p>
+
+    <p style="margin:4px 0;">
+
+        <b>Rolling 8-Day Province-wise Benchmark:</b>
+
+        Expected volumes are calculated using the
+        average daily volume of the preceding
+        90 calendar days, multiplied by eight.
+
+    </p>
+
+    <p style="margin:4px 0;">
+
+        <b>Remaining Monthly Volumes:</b>
+
+        Remaining application, alert and fraud counts,
+        along with credit limits, are estimated using
+        the historical six-month daily average and
+        the number of remaining days in the reporting
+        month.
+
+    </p>
+
+    <p style="margin:4px 0;">
+
+        <b>Fraud Maturity:</b>
+
+        Recent fraud volumes may be understated due
+        to delays in fraud identification and
+        claims reporting.
+
+        Alerts and frauds are reported based on
+        application date.
+
+    </p>
+
+    <p style="margin:4px 0;">
+
+        <b>Percentage Difference:</b>
+
+        Percentage differences are calculated relative
+        to expected volumes. Percentage differences
+        are unavailable where expected volume is zero
+        and actual volume is positive.
+
+    </p>
+
+    <p style="margin:4px 0;">
+
+        <b>Reporting Cut-off:</b>
+
+        All reports exclude the current day to avoid
+        comparing incomplete daily volumes with
+        completed historical days.
+
+    </p>
+
+    <p style="margin:4px 0;">
+
+        <b>Data Sources:</b>
+
+        FIQM applications, priority alerts, OM5 alerts
+        and fraud claims data.
+
+    </p>
+
+    <p>Thanks,</p>
+
+    </div>
+    """
+]
+
+
+# ==========================================================
+# 23. PREVIEW EMAIL
+# ==========================================================
+
+email_body = "".join(message_list)
+
+displayHTML(
+
+    f"<h3>{subject}</h3>"
+
+    + email_body
+)
+
+
+# ==========================================================
+# 24. SEND EMAIL NOTIFICATION
+# ==========================================================
+
+# Use your existing recipient_list.
+# Ensure it is populated before sending.
+
+if globals().get("recipient_list"):
+
+    notification.multiline_notification(
+
+        message_list=message_list,
+
+        subject=subject,
+
+        recipient_list=recipient_list,
+
+        data_frame=None
+    )
+
+    print("MBNA and Amazon monitoring notification completed.")
+
+else:
+
+    print("Email not sent: recipient_list is empty or undefined.")
+
+
+# ==========================================================
+# 25. CONFIRM REPORT AND GRAPH GENERATION
+# ==========================================================
+
+print("Monthly overall rows:", len(mbna_report_overall))
+
+print("Monthly province rows:", len(mbna_report))
+
+print("Daily overall rows:", len(mbna_8day_report_overall))
+
+print("Daily province rows:", len(mbna_8day_report))
+
+print("Total graphs saved:", len(all_graph_paths))
+
+print("Email status:", email_status)
+
+print("Graph output directory:", os.path.abspath(output_dir))
+
+for path in all_graph_paths:
+
+    print(path)
